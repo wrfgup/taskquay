@@ -4,6 +4,8 @@ import { registerAgentTaskTool } from "./agent-task.js";
 import { applyPatch } from "../apply-patch.js";
 import type { ProcessSnapshot } from "../process-sessions.js";
 import { trackedWork } from "./work-task.js";
+import { argumentFingerprint } from "../mcp-request-diagnostics.js";
+import { textPage } from "../bounded-reply.js";
 import {
   EDIT_TOOL_ANNOTATIONS,
   SHELL_TOOL_ANNOTATIONS,
@@ -72,6 +74,8 @@ function processOutputSchema(): z.ZodRawShape {
 }
 
 function processToolResponse(snapshot: ProcessSnapshot) {
+  const page = textPage(snapshot.output, 0, 16 * 1024);
+  if (page.nextOffset !== null) snapshot = { ...snapshot, output: page.text + "\n[Response byte budget reached; full output hash is in work_task get metadata.]", outputTruncated: true };
   const result = processResult(snapshot);
   const content = [textBlock(result)];
   return {
@@ -107,6 +111,7 @@ function registerApplyPatchTool(context: ToolRegistrationContext): void {
       inputSchema: {
         workspaceId: z.string().describe(workspaceIdDescription),
         workRunId: z.string().optional(),
+        requestKey: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/).optional().describe("Stable mutation identity within workRunId. A repeated key returns a recovery error without reapplying the patch."),
         patch: z
           .string()
           .describe(
@@ -126,7 +131,9 @@ function registerApplyPatchTool(context: ToolRegistrationContext): void {
       }),
       annotations: EDIT_TOOL_ANNOTATIONS,
     },
-    async ({ workspaceId, workRunId, patch }) => {
+    async ({ workspaceId, workRunId, patch, requestKey }) => {
+      if (requestKey && !workRunId) throw new Error("requestKey requires workRunId.");
+      let operationId: string | undefined;
       const startedAt = performance.now();
       const applied = await runLoggedToolOperation(
         config,
@@ -135,7 +142,8 @@ function registerApplyPatchTool(context: ToolRegistrationContext): void {
         async () => {
           const workspace = await workspaces.getWorkspace(workspaceId);
           return trackedWork(config.stateDir, workRunId, { root: workspace.root, workspaceId }, "apply_patch",
-            () => processSessions.mutate(workspace.root, () => applyPatch(workspace.root, patch)));
+            (id) => { operationId = id; return processSessions.mutate(workspace.root, () => applyPatch(workspace.root, patch)); },
+            { argumentFingerprint: argumentFingerprint({ patch }), selectionCount: 0, requestKey });
         },
       );
       const paths = applied.files.map((file) => file.path).join(", ");
@@ -146,6 +154,7 @@ function registerApplyPatchTool(context: ToolRegistrationContext): void {
         content,
         structuredContent: {
           result,
+          operationId, workRunId, hostAcknowledgment: "unknown",
           additions: applied.additions,
           removals: applied.removals,
           files: applied.files,
@@ -167,6 +176,7 @@ function registerCodexProcessTools(context: ToolRegistrationContext): void {
       inputSchema: {
         workspaceId: z.string().describe(workspaceIdDescription),
         cmd: z.string().min(1).describe("Shell command to execute."),
+        requestKey: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/).optional().describe("Stable command identity within workRunId; a repeated key never runs the command again. Recover using work_task get."),
         workRunId: z.string().optional().describe("Work run whose command remains active until the process exits, not merely until the first yield."),
         resources: z.array(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/)).max(16).optional()
           .describe("Additional exclusive resource keys for shared build outputs/devices. Checkout exclusion is automatic."),
@@ -219,6 +229,7 @@ function registerCodexProcessTools(context: ToolRegistrationContext): void {
     async ({
       workspaceId,
       cmd,
+      requestKey,
       workRunId,
       tty,
       columns,
@@ -248,6 +259,7 @@ function registerCodexProcessTools(context: ToolRegistrationContext): void {
           return processSessions.start({
             workspaceId,
             command: cmd,
+            requestKey,
             workRunId,
             cwd,
             workspaceRoot: workspace.root,

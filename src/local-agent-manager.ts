@@ -400,6 +400,9 @@ export class LocalAgentManager {
         ticket = this.execution.enqueue(requirement, waitMs);
       }
     } catch (error) {
+      this.store.updateResult(record.id, { status: "error", errorCode: "AGENT_CONFLICT", errorRetryable: true,
+        error: "Local admission failed before provider invocation; previous successful results remain recoverable." });
+      this.ledger.providerNotRequested(executionId);
       this.ledger.endExecution(executionId, "failed");
       if (error instanceof ExecutionConflictError) return Result.err(new AgentConflictError({
         code: "AGENT_CONFLICT", agentId: error.agentId, operation: "admission", retryable: true, message: error.message,
@@ -418,7 +421,6 @@ export class LocalAgentManager {
       status: ticket ? "queued" : "running",
       model: overrides.model ?? record.model,
       effort: overrides.effort ?? record.effort,
-      latestResponse: undefined,
       error: undefined,
       errorCode: undefined,
       errorRetryable: undefined,
@@ -530,6 +532,7 @@ export class LocalAgentManager {
         agentDir: this.agentDir,
       };
       const callbacks: LocalAgentRunCallbacks = {
+        onNotRequested: executionId ? () => { this.ledger.providerNotRequested(executionId); } : undefined,
         onActivity: (activity) => {
           const saved = this.store.recordActivityResult(record.id, activity);
           if (saved.isErr()) this.log("warn", "agent_progress_persistence_failed", { agentId: record.id, errorCode: saved.error.code });
@@ -573,6 +576,7 @@ export class LocalAgentManager {
       const current = this.store.getByIdResult(record.id);
       if (current.isErr()) throw current.error;
       if (!current.value) return;
+      if (executionId) this.ledger.saveResponse(executionId, runResult.finalResponse);
       const updated = this.store.updateResult(record.id, {
         providerSessionId: runResult.providerSessionId ?? current.value.providerSessionId,
         contextSignature: createHash("sha256").update(JSON.stringify([record.provider, input.value.model, input.value.effort,

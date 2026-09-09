@@ -58,6 +58,7 @@ async function testDatabaseConfiguration(stateDir: string): Promise<void> {
       { version: 11, name: "project-console-work-ledger" },
       { version: 12, name: "bounded-agent-progress" },
       { version: 13, name: "workspace-recovery-state" },
+      { version: 14, name: "successful-execution-responses" },
     ]);
   } finally {
     database.close();

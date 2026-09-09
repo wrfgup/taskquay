@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isUtf8 } from "node:buffer";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
@@ -30,6 +31,7 @@ export function readContextFile(root: string, path: string): { path: string; byt
     throw new Error("Context input changed while reading; recapture it.");
   }
   if (bytes.includes(0)) throw new Error("Binary context inputs are not accepted.");
+  if (!isUtf8(bytes)) throw new Error("Context input must be valid UTF-8; invalid bytes cannot be paged losslessly.");
   return { path: local.split(sep).join("/"), bytes, sha256: createHash("sha256").update(bytes).digest("hex") };
 }
 

@@ -145,5 +145,9 @@ test("ten thousand operations and turns page without loss; stable tiny snapshot 
   f.ledger.operation({ runId: f.runId, requestKey: "late", kind: "read", label: "read", status: "completed" });
   const stale = await f.call({ action: "history", workRunId: f.runId, cursor: firstCursor });
   assert(stale.error); assert.match(stale.data.message, /STALE_CURSOR/);
-  assert.equal((await f.call({ action: "get", workRunId: f.runId })).data.operations.length, 10001);
+  const compatible = await f.call({ action: "get", workRunId: f.runId });
+  assert.equal(compatible.data.operations.length, 5);
+  assert.equal(compatible.data.completionSnapshot.operationCount, 10001);
+  assert(compatible.data.nextCursor);
+  assert(Buffer.byteLength(JSON.stringify(compatible.data)) < 24 * 1024);
 });

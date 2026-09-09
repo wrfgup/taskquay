@@ -1,4 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
+import { textPage, REPLY_BYTES } from "./bounded-reply.js";
+import { argumentFingerprint } from "./mcp-request-diagnostics.js";
 import { ensureDesktopProject } from "./codex-projects.js";
 import { WorkLedger as ProjectWorkLedger } from "./work-ledger.js";
 import { readFileSync } from "node:fs";
@@ -642,6 +644,7 @@ function registerMcpSurface(
           .join(" "),
       inputSchema: {
         workRunId: z.string().optional().describe("Run from work_task begin; records this direct host operation without calling Codex."),
+        responseOffset: z.number().int().nonnegative().optional().describe("Code-point offset within this read result; keep path/line selection fixed and check resultSha256 when paging."),
         workspaceId: z
           .string()
           .describe(workspaceIdDescription),
@@ -665,21 +668,24 @@ function registerMcpSurface(
           .optional()
           .describe("Maximum number of lines to read."),
       },
-      outputSchema: resultOutputSchema(),
+      outputSchema: resultOutputSchema({ argumentFingerprint: z.string().optional(), resultSha256: z.string().optional(),
+        responsePage: z.object({ offset: z.number(), nextOffset: z.number().nullable(), totalCodePoints: z.number() }).optional(),
+        pagination: z.string().optional() }),
       annotations: { readOnlyHint: true },
     },
-    async ({ workspaceId, workRunId, ...input }) => {
+    async ({ workspaceId, workRunId, responseOffset, ...input }) => {
       const startedAt = performance.now();
       const workspace = await workspaces.getWorkspace(workspaceId);
       const readPath = workspaces.resolveReadPath(workspace, input.path);
-      const response = await trackedWork(config.stateDir, workRunId, { root: workspace.root, workspaceId }, "read", () => processSessions.readWorkspace(workspace.root, () => readFileTool(
+      let operationId: string | undefined;
+      const response = await trackedWork(config.stateDir, workRunId, { root: workspace.root, workspaceId }, "read", (id) => { operationId = id; return processSessions.readWorkspace(workspace.root, () => readFileTool(
         { ...input, path: readPath.absolutePath },
         {
           cwd: workspace.root,
           root: workspace.root,
           readRoots: readPath.readRoots,
         },
-      )));
+      )); }, { argumentFingerprint: argumentFingerprint({ workspaceId, workRunId, ...input }), selectionCount: 1 });
 
       if (response.isError) {
         logFailedToolResponse(config, {
@@ -698,12 +704,18 @@ function registerMcpSurface(
         durationMs: Math.round(performance.now() - startedAt),
       });
 
-      return {
-        ...response,
-        structuredContent: {
-          result: contentText(response.content),
-        },
-      };
+      const original = contentText(response.content);
+      const page = textPage(original, responseOffset);
+      const result = { ...response,
+        content: response.content.map((block) => block.type === "text" ? { type: "text" as const, text: page.text } : block),
+        structuredContent: { result: page.text, operationId, workRunId, hostAcknowledgment: "unknown",
+          argumentFingerprint: argumentFingerprint({ action: "read", ...input }),
+          resultSha256: createHash("sha256").update(original).digest("hex"), responsePage: { ...page, text: undefined },
+          pagination: "For exact full-file hashes and long source lines use workspace_context capture; read preserves the upstream reader's truncation notices." } };
+      if (Buffer.byteLength(JSON.stringify(result)) > REPLY_BYTES) return {
+        content: [{ type: "text" as const, text: "Non-text read exceeds response budget; select a smaller artifact." }],
+        structuredContent: { result: "Non-text read exceeds response budget; select a smaller artifact.", operationId, workRunId }, isError: true };
+      return result;
     },
   );
 

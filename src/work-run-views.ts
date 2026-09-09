@@ -4,6 +4,7 @@ import { isAbsolute, relative, resolve } from "node:path";
 import * as z from "zod/v4";
 import { isPathInsideRoot } from "./roots.js";
 import { digest, executionUsage, WorkLedger, type ExecutionRow } from "./work-ledger.js";
+import { replyBytes, REPLY_BYTES } from "./bounded-reply.js";
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const path = z.string().min(1).max(240).refine((value) =>
@@ -97,6 +98,15 @@ export class WorkRunViews {
       const states = (table: string) => this.ledger.db.prepare(`select status,count(*) n from ${table} where run_id=? group by status order by status`).all(runId);
       const activeCount = (table: string) => (this.ledger.db.prepare(`select count(*) n from ${table} where run_id=? and status in ('starting','queued','running')`).get(runId) as { n: number }).n;
       const activeOperationCount = activeCount("console_operations"), activeExecutionCount = activeCount("console_executions");
+      const operationCounts = this.ledger.db.prepare("select kind,status,count(*) count from console_operations where run_id=? group by kind,status order by kind,status").all(runId) as { kind: string; status: string; count: number }[];
+      const commandCounts = operationCounts.filter((row) => row.kind === "command");
+      const mutationCounts = operationCounts.filter((row) => ["apply_patch", "write", "edit"].includes(row.kind));
+      const latestCommand = this.ledger.db.prepare("select id operationId,status,evidence from console_operations where run_id=? and kind='command' and status='completed' order by rowid desc limit 1").get(runId) as { operationId: string; status: string; evidence: string } | undefined;
+      let commandEvidence: unknown;
+      try { const value = JSON.parse(JSON.parse(latestCommand?.evidence ?? "[]")[0]?.reference);
+        if (value.boundary === "process") commandEvidence = { sessionId: value.sessionId, exitCode: value.exitCode,
+          outputBytes: value.outputBytes, outputSha256: value.outputSha256, logReference: value.logReference, outputRecovery: "metadata_only" };
+      } catch { /* Old evidence remains unknown, never proof of non-execution. */ }
       // Ledger receipt revisions include usage updates; observation revisions must not.
       const revision = digest([run.id, run.status, run.acceptance, operationCount, executionCount,
         states("console_operations"), states("console_executions"), latest, latestVerified, invalidPublications]);
@@ -104,6 +114,10 @@ export class WorkRunViews {
         revision, unchanged: knownRevision === revision,
         executionStatus: run.status, acceptanceStatus: run.acceptance,
         operationCount, executionCount, activeOperationCount, activeExecutionCount,
+        commandCounts, mutationCounts,
+        latestSuccessfulCommand: latestCommand ? { operationId: latestCommand.operationId, evidence: commandEvidence } : null,
+        hostAcknowledgment: "unknown", transportStatus: "not_observed_by_ledger",
+        evidenceGuidance: "Completed mutations/commands are execution evidence, not acceptance. Missing receipts do not prove non-execution. Reconcile before replay.",
         latestDelivery: latest, latestVerifiedDelivery: latestVerified,
         deliveryCompatibility: invalidPublications ? "invalid_publication" : !latest ? "unknown"
           : expectedSourceHash && latest.receipt.sourceHash !== expectedSourceHash ? "stale_source"
@@ -112,7 +126,7 @@ export class WorkRunViews {
         nextAction: invalidPublications || (expectedSourceHash && latest?.receipt.sourceHash !== expectedSourceHash) ? "validate_checkpoint_before_use"
           : latest?.receipt.status === "failed" || run.acceptance === "failed" ? "repair_failed_acceptance_preserve_verified_artifacts"
           : run.status === "running" ? activeOperationCount + activeExecutionCount > 0 ? "observe_active_work" : "reconcile_and_finish_work" : "review_acceptance",
-        history: { action: "history", fullHistory: { action: "get" } },
+        history: { action: "history", compatibility: { action: "get" } },
         usage: { action: "get", basis: "managed_executions_of_this_run_only", included: false },
       };
     })();
@@ -130,12 +144,18 @@ export class WorkRunViews {
         if (position.revision !== run.revision) throw new Error("STALE_CURSOR: run changed; restart history without cursor. No events were acknowledged or discarded.");
       }
       const operations = this.ledger.db.prepare("select id,kind,label,status,evidence,created_at,finished_at from console_operations where run_id=? order by rowid limit ? offset ?")
-        .all(runId, limit + 1, position.operations);
+        .all(runId, limit + 1, position.operations).map((row: any) => ({ ...row,
+          // Full arbitrary evidence can contain 40 large strings. Expose bounded
+          // references in history; never silently drop an operation.
+          label: String(row.label).slice(0, 200),
+          evidence: Buffer.byteLength(row.evidence) <= 2000 ? row.evidence : undefined,
+          evidenceSha256: digest(row.evidence), evidenceBytes: Buffer.byteLength(row.evidence) }));
       const turns = (this.ledger.db.prepare("select * from console_executions where run_id=? order by rowid limit ? offset ?")
         .all(runId, limit + 1, position.turns) as ExecutionRow[]).map((row) => ({ executionId: row.id, agentId: row.agent_id,
           providerTurnId: row.provider_turn_id, managedThreadId: row.managed_thread_id, status: row.status, ...executionUsage(row),
           boundary: row.boundary_reason, requestedModel: row.requested_model, requestedEffort: row.requested_effort,
           createdAt: row.created_at, finishedAt: row.finished_at }));
+      while (limit > 1 && replyBytes({ operations: operations.slice(0, limit), turns: turns.slice(0, limit) }) > REPLY_BYTES - 8192) limit--;
       const more = operations.length > limit || turns.length > limit;
       return { workRunId: runId, receiptRevision: run.revision, operations: operations.slice(0, limit), turns: turns.slice(0, limit),
         nextCursor: more ? Buffer.from(JSON.stringify({ ...position, operations: position.operations + Math.min(limit, operations.length),

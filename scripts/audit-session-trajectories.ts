@@ -23,7 +23,7 @@ for (const g of result.conversations) {
   summary.selectedExecutions += Object.values(g.executionStates).reduce((a, b) => a + b, 0);
   summary.knownDeltaTokens += g.knownDeltaTokens; summary.missingDeltaExecutions += g.missingDeltaExecutions;
 }
-const directory = resolve("releases/trajectory-two-day-20260908");
+const directory = resolve(value("--out-dir") ?? "releases/trajectory-two-day-20260908");
 mkdirSync(directory, { recursive: true });
 const path = resolve(directory, `audit-${selection}.json`), body = JSON.stringify({ ...result, summary, diagnostics }, null, 2);
 if (Buffer.byteLength(body) > 16 * 1024 * 1024) throw new Error("Bounded artifact size exceeded; no output written.");

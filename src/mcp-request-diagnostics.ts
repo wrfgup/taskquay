@@ -10,6 +10,17 @@ const object = (value: unknown): Record<string, any> => value !== null && typeof
 const known = (value: unknown, allowed: Set<string>) => typeof value === "string" && allowed.has(value) ? value : "other";
 const identity = (value: unknown, prefix: string) => typeof value === "string" && new RegExp(`^${prefix}_[a-f0-9]{6,64}$`).test(value) ? value : undefined;
 
+export function argumentFingerprint(args: Record<string, any>): string {
+  const normalize = (value: any): any => Array.isArray(value) ? value.map(normalize)
+    : value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, normalize(value[key])])) : value;
+  const selection = Array.isArray(args.files) ? args.files.map((file: any) => ({ path: String(file?.path ?? "").replaceAll("\\", "/"),
+    startLine: file?.startLine ?? 1, maxLines: file?.maxLines ?? 80 })) : undefined;
+  return createHash("sha256").update(JSON.stringify(normalize({ ...args,
+    ...(typeof args.path === "string" ? { path: args.path.replaceAll("\\", "/") } : {}),
+    ...(typeof args.directory === "string" ? { directory: args.directory.replaceAll("\\", "/") } : {}),
+    ...(selection ? { files: selection } : {}) }))).digest("hex");
+}
+
 /** Metadata only. Never log request arguments, result text, headers, or raw errors.
  * This boundary also sees schema/auth failures that never enter a tool handler. */
 export function traceMcpRequest(req: Request, res: Response, requestId: string, record: RecordEvent): void {
@@ -18,6 +29,7 @@ export function traceMcpRequest(req: Request, res: Response, requestId: string, 
   const context = { requestId, method: known(body.method, methods),
     ...(body.method === "tools/call" ? { tool: known(params.name, tools), action: known(args.action, actions),
       workspaceId: identity(args.workspaceId, "ws"), workRunId: identity(args.workRunId, "run"), agentId: identity(args.agentId, "agt") } : {}),
+    argumentFingerprint: argumentFingerprint(args), selectionCount: Array.isArray(args.files) ? args.files.length : typeof args.path === "string" ? 1 : 0,
     conversationHash: typeof session === "string" && session.length <= 1024
       ? createHash("sha256").update(JSON.stringify(session)).digest("hex").slice(0, 24) : undefined };
   const started = performance.now(), limit = 64 * 1024;
@@ -50,8 +62,10 @@ export function traceMcpRequest(req: Request, res: Response, requestId: string, 
           const envelope = object(JSON.parse(message));
           if (!("result" in envelope) && !("error" in envelope)) continue;
           const payload = object(envelope.result), error = object(envelope.error);
+          const structured = object(payload.structuredContent);
           const content = Array.isArray(payload.content) ? payload.content : [];
           result = { resultInspection: "inspected", rpcErrorCode: Number.isInteger(error.code) ? error.code : undefined,
+            operationId: identity(structured.operationId, "op"),
             toolError: payload.isError === true, contentBlocks: content.length,
             textBytes: content.reduce((n: number, block: any) => n + (typeof block?.text === "string" ? Buffer.byteLength(block.text) : 0), 0),
             structuredContentPresent: payload.structuredContent !== undefined };
@@ -60,6 +74,7 @@ export function traceMcpRequest(req: Request, res: Response, requestId: string, 
             if (block?.type !== "text" || typeof block.text !== "string") continue;
             try {
               const value = object(JSON.parse(block.text));
+              result.operationId = identity(value.operationId, "op") ?? result.operationId;
               result.receiptPresent = result.receiptPresent === true || "completionReceipt" in value || "completionSnapshot" in value || "receipt" in value || "workRunId" in value;
               if (typeof value.code === "string") result.toolErrorCode = known(value.code, errorCodes);
               if (typeof value.message === "string" && payload.isError === true) result.errorFingerprint = createHash("sha256").update(value.message).digest("hex").slice(0, 16);
@@ -69,6 +84,7 @@ export function traceMcpRequest(req: Request, res: Response, requestId: string, 
       }
     }
     emit("mcp_exchange_finished", { ...context, httpStatus: res.statusCode, aborted: !res.writableFinished,
+      transportStatus: res.writableFinished ? "finished" : "aborted", hostAcknowledgment: "unknown",
       durationMs: Math.round(performance.now() - started), responseBytes: bytes, responseSha256: hash.digest("hex"),
       responseFormat: String(res.getHeader("content-type") ?? "").includes("text/event-stream") ? "sse"
         : String(res.getHeader("content-type") ?? "").includes("application/json") ? "json" : "other",

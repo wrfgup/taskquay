@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { executionContract, type ExecutionContract, resolveShellCommand, terminateProcessTree } from "./process-platform.js";
 import { ExecutionCoordinator, type ExecutionClaim } from "./execution-coordinator.js";
 import { WorkLedger } from "./work-ledger.js";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash, type Hash } from "node:crypto";
 import { diagnosticError } from "./server-diagnostics.js";
 
 const DEFAULT_EXEC_YIELD_MS = 10_000;
@@ -17,6 +17,7 @@ const DEFAULT_COLUMNS = 80;
 const DEFAULT_ROWS = 24;
 
 export interface StartCommandInput {
+  requestKey?: string;
   workspaceId: string;
   command: string;
   cwd: string;
@@ -86,6 +87,7 @@ interface ProcessSession {
   workRunId?: string;
   failure?: Record<string, unknown>;
   outputBytes: number;
+  outputHash: Hash;
 }
 
 interface ProcessSessionManagerOptions {
@@ -276,6 +278,15 @@ export class ProcessSessionManager {
 
   async start(input: StartCommandInput): Promise<ProcessSnapshot> {
     if (this.shuttingDown) throw new Error("Execution manager is shutting down.");
+    if (input.requestKey) {
+      if (!input.workRunId || !this.workStateDir) throw new Error("Command requestKey requires persistent workRunId.");
+      const ledger = new WorkLedger(this.workStateDir);
+      try {
+        ledger.requireScope(input.workRunId, input.workspaceRoot ?? input.cwd, input.workspaceId);
+        const prior = ledger.db.prepare("select id from console_operations where run_id=? and request_key=?").get(input.workRunId, `command:${input.requestKey}`) as { id: string } | undefined;
+        if (prior) throw new Error(`RECORDED_OPERATION: ${prior.id}; recover through work_task get. Command was not replayed.`);
+      } finally { ledger.close(); }
+    }
     const yieldTimeMs = boundedInteger(input.yieldTimeMs, DEFAULT_EXEC_YIELD_MS, MAX_COMMAND_YIELD_MS);
     boundedInteger(input.maxOutputTokens, DEFAULT_MAX_OUTPUT_TOKENS, 100_000);
     const session = this.createSession(input);
@@ -289,7 +300,11 @@ export class ProcessSessionManager {
         const ledger = new WorkLedger(this.workStateDir);
         try {
           ledger.requireScope(input.workRunId, input.workspaceRoot ?? input.cwd, input.workspaceId);
-          session.workOperationId = ledger.operation({ runId: input.workRunId, requestKey: `command:${randomUUID()}`,
+          if (input.requestKey) {
+            const prior = ledger.db.prepare("select id from console_operations where run_id=? and request_key=?").get(input.workRunId, `command:${input.requestKey}`) as { id: string } | undefined;
+            if (prior) throw new Error(`RECORDED_OPERATION: ${prior.id}; recover through work_task get. Command was not replayed.`);
+          }
+          session.workOperationId = ledger.operation({ runId: input.workRunId, requestKey: `command:${input.requestKey ?? randomUUID()}`,
             kind: "command", label: "受管命令（不记录原始命令或凭据）", status: "running" });
         } finally { ledger.close(); }
       } else if (input.workRunId) throw new Error("Work accounting is unavailable; command was not started.");
@@ -385,6 +400,7 @@ export class ProcessSessionManager {
       workspaceId: input.workspaceId,
       workRunId: input.workRunId,
       outputBytes: 0,
+      outputHash: createHash("sha256"),
       startedAt: Date.now(),
       columns: terminalSize(input.columns, DEFAULT_COLUMNS),
       rows: terminalSize(input.rows, DEFAULT_ROWS),
@@ -415,8 +431,9 @@ export class ProcessSessionManager {
       kill: (signal = "SIGTERM") => terminateProcessTree(child, signal, detached),
     };
     child.once("spawn", () => this.record(session, "process_started", { childPid: child.pid }));
-    child.stdout.on("data", (data: Buffer) => this.append(session, data.toString("utf8")));
-    child.stderr.on("data", (data: Buffer) => this.append(session, data.toString("utf8")));
+    child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (data: string) => this.append(session, data));
+    child.stderr.on("data", (data: string) => this.append(session, data));
     child.on("error", (error) => {
       session.failure = diagnosticError(error);
       this.record(session, "process_error", session.failure, "error");
@@ -493,7 +510,9 @@ export class ProcessSessionManager {
         label: success ? "Managed process exited successfully (not deployment acceptance)" : "Managed process failed; inspect state before retrying",
         reference: JSON.stringify({ version: 1, boundary: "process", sessionId: session.id, pid: process.pid,
           exitCode: session.exitCode ?? null, signal: session.signal ?? null, elapsedMs: Date.now() - session.startedAt,
-          outputBytes: session.outputBytes, ...session.failure, retry: "reconcile_before_replay" }),
+          outputBytes: session.outputBytes, outputSha256: session.outputHash.copy().digest("hex"),
+          logReference: { event: "process_finished", operationId: session.workOperationId, sessionId: session.id, pid: process.pid },
+          outputRecovery: "metadata_only", hostAcknowledgment: "unknown", ...session.failure, retry: "reconcile_before_replay" }),
         outcome: success ? "passed" : "failed",
       }]);
     } catch (error) {
@@ -514,6 +533,7 @@ export class ProcessSessionManager {
 
   private append(session: ProcessSession, output: string): void {
     session.outputBytes += Buffer.byteLength(output);
+    session.outputHash.update(output);
     session.buffer.append(output);
   }
 

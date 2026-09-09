@@ -8,6 +8,7 @@ import type { ToolRegistrationContext } from "./types.js";
 import { WorkLedger } from "../work-ledger.js";
 import { WorkRunViews } from "../work-run-views.js";
 import { hostOrigin, registeredClientLabel } from "./work-task.js";
+import { jsonReply, textPage } from "../bounded-reply.js";
 import { toAgentErrorPayload, type LocalAgentError } from "../local-agent-errors.js";
 
 type AgentClient = Pick<LocalAgentClient, "start" | "continue" | "get" | "list"> & Partial<Pick<LocalAgentClient, "cancelQueued">>;
@@ -21,6 +22,8 @@ export function registerAgentTaskTool(context: ToolRegistrationContext, client?:
     description: "Delegate only work that needs a Codex judgment or implementation. First inspect files directly with read/workspace_context; these do not invoke Codex. Pass a short host-prepared context, not the whole host history. Related work reuses sessions with workItemId/contextKey; use freshContext for independent review. At most two verified read-only agents share a source; writes/builds remain exclusive and excess work queues without invoking a model. Observe and usage never launch inference.",
     inputSchema: {
       workspaceId: z.string(),
+      responseOffset: z.number().int().nonnegative().optional(),
+      responseExecutionId: z.string().optional().describe("Retrieve a preserved successful execution in this agent's authorized run without inference."),
       action: z.enum(["start", "continue", "observe", "list", "claims", "usage", "cancelQueued"]),
       target: z.string().optional(),
       agentId: z.string().optional(),
@@ -48,9 +51,7 @@ export function registerAgentTaskTool(context: ToolRegistrationContext, client?:
   }, async (input, extra) => {
     const workspace = await workspaces.getWorkspace(input.workspaceId);
     const scope = { workspaceId: workspace.id, workspaceRoot: workspace.root };
-    const reply = (value: unknown, isError = false) => ({
-      content: [{ type: "text" as const, text: JSON.stringify(value) }], isError,
-    });
+    const reply = (value: any, isError = false) => ({ ...jsonReply(value), isError });
     const failure = async (error: LocalAgentError) => {
       if (error.code !== "AGENT_CONFLICT") return reply({ code: error.code, message: error.message, retryable: error.retryable }, true);
       const payload = toAgentErrorPayload(error);
@@ -128,6 +129,20 @@ export function registerAgentTaskTool(context: ToolRegistrationContext, client?:
         if (execution) {
           run = ledger.requireScope(execution.run_id, workspace.root, workspace.id);
         }
+        if (input.workRunId && input.workRunId !== run?.id) throw new Error("Agent is outside this work run.");
+        const successful = run ? ledger.successfulExecution(record.id, run.id) : undefined;
+        const preservedHistory = successful?.managedThreadId ? {
+          threadId: ledger.thread(successful.managedThreadId).thread_id, providerTurnId: successful.providerTurnId,
+          availability: "provider_owned_history_not_fetched", action: "Use verified provider history support; do not rewrite or fork the original thread automatically." } : undefined;
+        const responseExecutionId = input.responseExecutionId ?? successful?.executionId;
+        let responseText: string | undefined;
+        if (input.includeResponse && responseExecutionId && run) {
+          const selected = ledger.execution(responseExecutionId);
+          if (selected.agent_id !== record.id || selected.run_id !== run.id) throw new Error("Response is outside this agent/work run.");
+          responseText = (ledger.db.prepare("select response from execution_responses where execution_id=?").get(responseExecutionId) as { response: string } | undefined)?.response;
+        }
+        if (responseText === undefined && record.status === "idle") responseText = record.latestResponse;
+        const responsePage = input.includeResponse && responseText !== undefined ? textPage(responseText, input.responseOffset) : undefined;
         const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
         const completionSnapshot = run ? new WorkRunViews(ledger).snapshot(run.id) : undefined;
         const taskRevision = hash([record.id, record.status, record.latestResponse, record.error, record.errorCode, record.errorRetryable,
@@ -136,11 +151,16 @@ export function registerAgentTaskTool(context: ToolRegistrationContext, client?:
         const revision = hash([taskRevision, progressRevision]);
         const running = record.status === "queued" || record.status === "running" || record.status === "starting";
         if (!running || Date.now() >= deadline || (input.knownRevision && revision !== input.knownRevision)) {
-          const observation = presentAgentObservation(input.includeResponse && !running ? record : { ...record, latestResponse: undefined,
+          const observation = presentAgentObservation(input.includeResponse && !running ? { ...record, latestResponse: responsePage?.text,
+            error: record.error ? textPage(record.error, 0, 2000).text : undefined } : { ...record, latestResponse: undefined,
             error: record.errorCode ? "Agent reported an error; explicitly retrieve the terminal result for details." : undefined });
-          const completionReceipt = input.includeResponse && !running && run ? ledger.receipt(run.id) : undefined;
+          const completionReceipt = input.includeResponse && !running && run ? { ...ledger.receipt(run.id), evidence: [] } : undefined;
           return reply({ ...observation, ...agentControlState(record, workspace.id, revision), revision, taskRevision, progressRevision,
-            unchanged: revision === input.knownRevision, responseAvailable: !running && record.latestResponse !== undefined,
+            unchanged: revision === input.knownRevision, responseAvailable: Boolean(successful?.responseAvailable || (!running && record.status === "idle" && record.latestResponse !== undefined)),
+            latestSuccessfulExecution: successful, preservedHistory,
+            response: responsePage?.text, responsePage: responsePage ? { ...responsePage, text: undefined } : undefined,
+            responseExecutionId, hostAcknowledgment: "unknown",
+            recoveryAction: successful ? "Read preserved response or original managed thread history; a failed continuation does not erase earlier success. Do not replay mutations." : "No successful receipt found; this does not prove no work executed.",
             workRunId: run?.id, executionId: execution?.id, executionStatus: execution?.status,
             acceptanceStatus: run?.acceptance ?? "unknown", completionReceipt,
             completionSnapshot,

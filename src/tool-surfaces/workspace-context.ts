@@ -5,6 +5,8 @@ import * as z from "zod/v4";
 import { readContextFile } from "../workspace-context.js";
 import type { ToolRegistrationContext } from "./types.js";
 import { trackedWork } from "./work-task.js";
+import { jsonReply, replyBytes, REPLY_BYTES } from "../bounded-reply.js";
+import { argumentFingerprint } from "../mcp-request-diagnostics.js";
 
 /** Deterministic host-side context preparation. No agent client, model, or shell. */
 export function registerWorkspaceContextTool({ server, config, workspaces, processSessions }: ToolRegistrationContext): void {
@@ -17,6 +19,8 @@ export function registerWorkspaceContextTool({ server, config, workspaces, proce
       action: z.enum(["list", "capture", "search"]),
       directory: z.string().optional(),
       offset: z.number().int().min(0).max(100_000).optional(),
+      selectionIndex: z.number().int().min(0).max(23).optional(),
+      lineOffset: z.number().int().min(0).max(4 * 1024 * 1024).optional().describe("Unicode code-point offset in the first selected line. Use nextSelection to resume without losing long-line content."),
       files: z.array(z.object({ path: z.string().min(1).max(1024),
         startLine: z.number().int().min(1).max(1_000_000).optional(),
         maxLines: z.number().int().min(1).max(250).optional(),
@@ -26,7 +30,8 @@ export function registerWorkspaceContextTool({ server, config, workspaces, proce
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => {
     const workspace = await workspaces.getWorkspace(input.workspaceId);
-    const capture = () => processSessions.readWorkspace(workspace.root, async () => {
+    const capture = (operationId?: string) => processSessions.readWorkspace(workspace.root, async () => {
+      const receipt = { operationId, workRunId: input.workRunId, hostAcknowledgment: "unknown" };
       if (input.action === "list") {
         const base = await realpath(workspace.root);
         const path = workspaces.resolvePath(workspace, input.directory ?? ".");
@@ -37,13 +42,16 @@ export function registerWorkspaceContextTool({ server, config, workspaces, proce
         const offset = input.offset ?? 0;
         const page = entries.slice(offset, offset + 100).map((entry) => ({ name: entry.name,
           kind: entry.isSymbolicLink() ? "symlink" : entry.isDirectory() ? "directory" : "file" }));
-        return { providerInvoked: false, entries: page, total: entries.length,
+        const value = { ...receipt, providerInvoked: false, entries: page, total: entries.length,
           nextOffset: offset + page.length < entries.length ? offset + page.length : null };
+        while (replyBytes(value) > REPLY_BYTES && page.length > 1) {
+          page.pop(); value.nextOffset = offset + page.length;
+        }
+        return value;
       }
       if (!input.files?.length || (input.action === "search" && !input.query)) throw new Error("Select explicit files; search also needs a literal query.");
       let bytesRead = 0;
-      let lineBudget = 500;
-      const entries = input.files.map((selection) => {
+      const files = input.files.map((selection) => {
         const resolved = workspaces.resolveReadPath(workspace, selection.path);
         const readRoot = resolved.skillRead?.skill.baseDir ?? workspace.root;
         const file = readContextFile(readRoot, relative(readRoot, resolved.absolutePath));
@@ -51,26 +59,68 @@ export function registerWorkspaceContextTool({ server, config, workspaces, proce
         if (resolved.skillRead) file.path = resolved.absolutePath;
         bytesRead += file.bytes.length;
         if (bytesRead > 4 * 1024 * 1024) throw new Error("Context capture exceeds 4 MiB; narrow the selected files.");
-        const lines = file.bytes.toString("utf8").split(/\r?\n/);
-        const first = selection.startLine ?? 1;
-        const candidates = input.action === "search"
-          ? lines.map((text, index) => ({ line: index + 1, text })).filter((line) => line.line >= first && line.text.includes(input.query!))
-          : lines.slice(first - 1).map((text, index) => ({ line: first + index, text }));
-        const selected = candidates.slice(0, Math.min(lineBudget, selection.maxLines ?? 80)).map((line) => ({
-          ...line, text: line.text.slice(0, 2000), ...(line.text.length > 2000 ? { lineTruncated: true } : {}),
-        }));
-        lineBudget -= selected.length;
-        return { path: file.path, sha256: file.sha256, bytes: file.bytes.length, totalLines: lines.length,
-          lines: selected, truncated: selected.length < candidates.length,
-          nextLine: selected.length < candidates.length ? (selected.at(-1)?.line ?? first - 1) + 1 : null };
+        return { file, selection };
       });
-      const refs = entries.filter(({ path }) => !isAbsolute(path)).map(({ path, sha256 }) => ({ path, sha256 }));
-      return { providerInvoked: false, contextId: createHash("sha256").update(JSON.stringify(entries.map(({ path, sha256 }) => ({ path, sha256 })))).digest("hex"),
-        refs, entries, bytesRead,
-        consistency: "Selected file versions under a cooperative read claim. External edits require revalidation. This is not a whole-repository snapshot.",
-        delegation: "Use the host to summarize relevant facts; pass summary and refs as agent_task.context only when a worker is actually needed." };
+      const index = input.selectionIndex ?? 0;
+      if (index >= files.length) throw new Error("Invalid selection index.");
+      const { file, selection } = files[index]!;
+      const raw = file.bytes.toString("utf8").split(/(?<=\n)/u);
+      if (!raw.length) raw.push("");
+      const first = selection.startLine ?? 1;
+      const entry = { path: file.path, sha256: file.sha256, bytes: file.bytes.length, totalLines: raw.length,
+        lines: [] as { line: number; text: string; offset: number; eol: string; lineTruncated: boolean }[],
+        truncated: false, nextLine: null as number | null, nextOffset: 0 };
+      type Next = { selectionIndex: number; startLine: number; lineOffset: number };
+      const value = { ...receipt, providerInvoked: false,
+        contextId: createHash("sha256").update(JSON.stringify({ action: input.action, index, lineOffset: input.lineOffset ?? 0,
+          queryHash: input.query ? createHash("sha256").update(input.query).digest("hex") : null,
+          selections: files.map(({ file, selection }) => ({ path: file.path, sha256: file.sha256,
+            startLine: selection.startLine ?? 1, maxLines: selection.maxLines ?? 80 })) })).digest("hex"),
+        refs: isAbsolute(file.path) ? [] : [{ path: file.path, sha256: file.sha256 }], entries: [entry], bytesRead,
+        nextSelection: null as Next | null,
+        consistency: "Revalidate file hashes across pages; cooperative read claim is not an immutable checkout.",
+        pagination: "Reuse files and selectionIndex; set that selection's startLine and lineOffset from nextSelection. Lines carry exact EOL; offsets count Unicode code points." };
+      const candidates = raw.map((line, i) => ({ line: i + 1, text: line.replace(/\r?\n$/, ""), eol: line.endsWith("\r\n") ? "\r\n" : line.endsWith("\n") ? "\n" : "" }))
+        .filter((line) => line.line >= first && (input.action !== "search" || line.text.includes(input.query!)));
+      const nextFile = index + 1 < files.length ? { selectionIndex: index + 1, startLine: files[index + 1]!.selection.startLine ?? 1, lineOffset: 0 } : null;
+      value.nextSelection = nextFile;
+      for (const candidate of candidates) {
+        const offset = candidate.line === first ? input.lineOffset ?? 0 : 0;
+        const points = Array.from(candidate.text);
+        if (offset > points.length) throw new Error("Line offset exceeds selected line.");
+        const next = { selectionIndex: index, startLine: candidate.line, lineOffset: offset };
+        if (entry.lines.length >= (selection.maxLines ?? 80)) { value.nextSelection = next; break; }
+        const segment = { line: candidate.line, text: "", offset, eol: "", lineTruncated: true };
+        entry.lines.push(segment);
+        let lo = 0, hi = points.length - offset;
+        // Reserve the actual continuation metadata even for a terminal page.
+        value.nextSelection = { ...next, lineOffset: points.length };
+        entry.truncated = true; entry.nextLine = candidate.line; entry.nextOffset = points.length;
+        while (lo < hi) {
+          const n = Math.ceil((lo + hi) / 2);
+          segment.text = points.slice(offset, offset + n).join(""); segment.eol = candidate.eol;
+          if (replyBytes(value) <= REPLY_BYTES - 512) lo = n; else hi = n - 1;
+        }
+        segment.text = points.slice(offset, offset + lo).join("");
+        segment.lineTruncated = offset + lo < points.length;
+        segment.eol = segment.lineTruncated ? "" : candidate.eol;
+        if (replyBytes(value) > REPLY_BYTES - 512) {
+          entry.lines.pop(); value.nextSelection = next; break;
+        }
+        if (segment.lineTruncated) {
+          if (!lo) entry.lines.pop();
+          value.nextSelection = { ...next, lineOffset: offset + lo }; break;
+        }
+        value.nextSelection = nextFile;
+      }
+      entry.truncated = value.nextSelection?.selectionIndex === index;
+      entry.nextLine = entry.truncated ? value.nextSelection!.startLine : null;
+      entry.nextOffset = entry.truncated ? value.nextSelection!.lineOffset : 0;
+      if (replyBytes(value) > REPLY_BYTES) throw new Error("Context metadata exceeds the UTF-8 response budget; narrow selections.");
+      return value;
     });
-    const value = input.workRunId ? await trackedWork(config.stateDir, input.workRunId, { root: workspace.root, workspaceId: workspace.id }, "workspace_context", capture) : await capture();
-    return { content: [{ type: "text" as const, text: JSON.stringify(value) }] };
+    const value = input.workRunId ? await trackedWork(config.stateDir, input.workRunId, { root: workspace.root, workspaceId: workspace.id }, "workspace_context", capture,
+      { argumentFingerprint: argumentFingerprint(input), selectionCount: input.files?.length ?? 0 }) : await capture();
+    return jsonReply(value);
   });
 }

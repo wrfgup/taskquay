@@ -1,5 +1,6 @@
 import * as z from "zod/v4";
-import { logEvent, commandPreview } from "../logger.js";
+import { logEvent } from "../logger.js";
+import { createHash } from "node:crypto";
 import type { ServerConfig } from "../config.js";
 import {
   WORKSPACE_APP_URI,
@@ -11,6 +12,7 @@ import {
 
 export function resultOutputSchema(extra: z.ZodRawShape = {}): z.ZodRawShape {
   return {
+    operationId: z.string().optional(), workRunId: z.string().optional(), hostAcknowledgment: z.literal("unknown").optional(),
     result: z
       .string()
       .describe(
@@ -36,14 +38,12 @@ export function workspaceAppDescriptorMeta(config: ServerConfig): ToolWidgetDesc
 export function logToolCall(config: ServerConfig, fields: ToolLogFields): void {
   if (!config.logging.toolCalls) return;
 
-  const { command, ...safeFields } = fields;
-  logEvent(config.logging, fields.success ? "info" : "warn", "tool_call", {
+  const { command, path, workingDirectory, error, ...safeFields } = fields;
+  try { logEvent(config.logging, fields.success ? "info" : "warn", "tool_call", {
     ...safeFields,
-    commandPreview:
-      config.logging.shellCommands && command
-        ? commandPreview(command)
-        : undefined,
-  });
+    argumentFingerprint: createHash("sha256").update(JSON.stringify({ command, path, workingDirectory })).digest("hex"),
+    errorFingerprint: error ? createHash("sha256").update(error).digest("hex") : undefined,
+  }); } catch { /* Diagnostics must never turn a successful mutation into a failed tool. */ }
 }
 
 export async function runLoggedToolOperation<T>(

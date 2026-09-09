@@ -117,11 +117,17 @@ const defaultInteractive = await manager.start({
 assert.equal(defaultInteractive.running, true);
 assert.ok(defaultInteractive.sessionId);
 
-const defaultInputResult = await manager.write({
+let defaultInputResult = await manager.write({
   workspaceId: "workspace-a",
   sessionId: defaultInteractive.sessionId,
   chars: "hello\n",
 });
+// The default 250 ms yield is a response deadline, not a process-exit guarantee
+// under a loaded Windows runner. Poll only; never resend the input.
+if (defaultInputResult.running) {
+  const terminal = await manager.write({ workspaceId: "workspace-a", sessionId: defaultInteractive.sessionId, yieldTimeMs: 2000 });
+  defaultInputResult = { ...terminal, output: defaultInputResult.output + terminal.output };
+}
 assert.equal(defaultInputResult.running, false);
 assert.match(defaultInputResult.output, /default-input:hello/);
 

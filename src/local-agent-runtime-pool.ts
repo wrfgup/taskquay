@@ -77,20 +77,21 @@ export class LocalAgentRuntimePool {
     input: LocalAgentRunInput,
     inputCallbacks?: LocalAgentRunCallbacks,
   ): Promise<BetterResult<LocalAgentRunResult, AgentProviderError>> {
-    if (this.closing) return Result.err(poolClosedError(driver, context));
+    if (this.closing) { inputCallbacks?.onNotRequested?.(); return Result.err(poolClosedError(driver, context)); }
 
     let acquired = await this.acquire(driver, context);
-    if (acquired.isErr()) return acquired;
+    if (acquired.isErr()) { inputCallbacks?.onNotRequested?.(); return acquired; }
     let entry = acquired.value;
     let runtime = entry.runtime;
     if (!runtime) throw new Error("Local agent runtime was created without a runtime.");
     if (!runtime.isAlive()) {
       await this.discardRuntime(entry, driver.provider, "runtime_not_alive");
       acquired = await this.acquire(driver, context);
-      if (acquired.isErr()) return acquired;
+      if (acquired.isErr()) { inputCallbacks?.onNotRequested?.(); return acquired; }
       entry = acquired.value;
       runtime = entry.runtime;
       if (!runtime || !runtime.isAlive()) {
+        inputCallbacks?.onNotRequested?.();
         await this.discardRuntime(entry, driver.provider, "runtime_not_alive");
         return Result.err(new AgentProviderUnavailableError({
           code: "PROVIDER_UNAVAILABLE",
@@ -136,7 +137,7 @@ export class LocalAgentRuntimePool {
     const startedAt = this.now();
     try {
       const inputReservationError = await reserveSession(input.providerSessionId ?? "");
-      if (inputReservationError) return Result.err(inputReservationError);
+      if (inputReservationError) { inputCallbacks?.onNotRequested?.(); return Result.err(inputReservationError); }
       const result = await runtime.run(input, callbacks);
       if (result.isErr()) {
         if (!runtime.isAlive()) {

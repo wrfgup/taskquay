@@ -187,6 +187,30 @@ export class WorkLedger {
     return this.db.prepare("select * from console_executions where agent_id=? order by rowid desc limit 1").get(agentId) as ExecutionRow | undefined;
   }
 
+  saveResponse(executionId: string, response: string): void {
+    this.execution(executionId);
+    this.db.prepare("insert or ignore into execution_responses(execution_id,response,sha256,bytes) values(?,?,?,?)")
+      .run(executionId, response, createHash("sha256").update(response).digest("hex"), Buffer.byteLength(response));
+  }
+
+  successfulExecution(agentId: string, runId: string) {
+    return this.db.prepare(`select e.id executionId,e.run_id workRunId,e.provider_turn_id providerTurnId,
+      e.managed_thread_id managedThreadId,e.finished_at finishedAt,r.sha256,r.bytes,
+      r.execution_id is not null responseAvailable from console_executions e
+      left join execution_responses r on r.execution_id=e.id
+      where e.agent_id=? and e.run_id=? and e.status='completed' order by e.rowid desc limit 1`)
+      .get(agentId, runId) as { executionId: string; workRunId: string; providerTurnId: string | null;
+        managedThreadId: string | null; finishedAt: string | null; sha256: string | null; bytes: number | null; responseAvailable: number } | undefined;
+  }
+
+  providerNotRequested(executionId: string): void {
+    const row = this.execution(executionId);
+    // Positive adapter evidence cannot erase a lifecycle/usage observation.
+    this.db.prepare(`update console_executions set usage_quality='not_used',boundary_reason='confirmed_before_inference'
+      where id=? and requested=0 and provider_turn_id is null and provider_finished=0 and delta is null and cumulative is null`).run(executionId);
+    this.touch(row.run_id);
+  }
+
   reconcileInterruptedExecutions(): number {
     return this.db.transaction(() => {
       const rows = this.db.prepare("select * from console_executions where status in ('starting','queued','running')").all() as ExecutionRow[];

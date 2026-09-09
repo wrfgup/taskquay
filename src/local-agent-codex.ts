@@ -153,7 +153,8 @@ export class CodexAppServerRuntime implements LocalAgentRuntime {
   }
 
   async run(input: LocalAgentRunInput, callbacks?: LocalAgentRunCallbacks) {
-    return captureAgentProviderResult({
+    let requestPossible = false;
+    const result = await captureAgentProviderResult({
       provider: this.provider,
       operation: "run",
       run: async (): Promise<LocalAgentRunResult> => {
@@ -267,6 +268,7 @@ export class CodexAppServerRuntime implements LocalAgentRuntime {
           catch { callbacks?.onNameResult?.(false); }
         }
         await register([threadId]);
+        requestPossible = true;
         await callbacks?.onRequest?.();
         const completed = await this.rpc.runTurn(threadId, turnParams(input, threadId), (value) => {
           const usage = parseCodexUsage(value);
@@ -308,6 +310,8 @@ export class CodexAppServerRuntime implements LocalAgentRuntime {
         };
       },
     });
+    if (result.isErr() && !requestPossible) callbacks?.onNotRequested?.();
+    return result;
   }
 
   async releaseSession(providerSessionId: string): Promise<void> {

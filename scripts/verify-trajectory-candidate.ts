@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { resolve, join, relative } from "node:path";
 const root = process.cwd(), directory = resolve(process.argv[2] ?? "releases/trajectory-two-day-20260908");
+const baseline = process.argv[3] ?? spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", windowsHide: true }).stdout.trim();
+if (!/^[a-f0-9]{40}$/.test(baseline)) throw new Error("Explicit baseline must be a full commit SHA.");
 mkdirSync(directory, { recursive: true });
 // Compiled version.ts resolves the package manifest relative to the candidate.
 writeFileSync(join(directory, "package.json"), readFileSync(resolve("package.json")));
@@ -23,13 +25,13 @@ function files(dir: string): string[] {
 }
 const manifest = files(join(directory, "candidate")).map((path) => ({ path: relative(join(directory, "candidate"), path).replaceAll("\\", "/"), sha256: digest(readFileSync(path)) }));
 const sourceManifest = files(resolve("src")).map((path) => ({ path: relative(root, path).replaceAll("\\", "/"), sha256: digest(readFileSync(path)) }));
-const inputPaths = ["AGENTS.md", "src/process-sessions.ts", "src/process-platform.ts", "src/tool-surfaces/codex.ts", "src/tool-surfaces/work-task.ts", "scripts/inspect-conversation-trajectory.ts", "src/server-diagnostics.ts"];
+const inputPaths = ["AGENTS.md", "src/process-sessions.ts", "src/tool-surfaces/workspace-context.ts", "src/mcp-request-diagnostics.ts", "src/local-agent-codex.ts", "src/tool-surfaces/codex.ts", "src/tool-surfaces/work-task.ts"];
 const baselineInputs = inputPaths.map((path) => {
-  const content = spawnSync("git", ["show", `8d87b40:${path}`], { windowsHide: true, maxBuffer: 1024 * 1024 });
+  const content = spawnSync("git", ["show", `${baseline}:${path}`], { windowsHide: true, maxBuffer: 1024 * 1024 });
   return { path, sha256: digest(content.stdout), exitCode: content.status };
 });
 const receipt = { status: steps.every((s) => s.exitCode === 0 && !s.failedToRun) ? "passed" : "failed", steps,
-  baselineCommit: "8d87b40361e8c647445f4f8dd6c8d61413e38c07", baselineInputs, candidateFiles: manifest.length,
+  baselineCommit: baseline, baselineInputs, candidateFiles: manifest.length,
   candidateManifestSha256: digest(JSON.stringify(manifest)), sourceManifestSha256: digest(JSON.stringify(sourceManifest)), manifest, sourceManifest,
   liveDistChanged: false, uiBuild: "not_run_no_ui_change", packagedNpmInstall: "not_verified" };
 const path = join(directory, "candidate-verification.json"), body = JSON.stringify(receipt, null, 2);

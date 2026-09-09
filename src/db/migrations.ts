@@ -167,6 +167,12 @@ migrations.push({ version: 12, name: "bounded-agent-progress", up(sqlite) {
   addColumnIfMissing(sqlite, "local_agent_sessions", "progress", "text");
 } });
 migrations.push({ version: 13, name: "workspace-recovery-state", up: migrateWorkspaceRecoveryState });
+migrations.push({ version: 14, name: "successful-execution-responses", up(sqlite) {
+  sqlite.exec(`create table if not exists execution_responses (
+    execution_id text primary key references console_executions(id),
+    response text not null, sha256 text not null, bytes integer not null
+  );`);
+} });
 
 function migrateWorkspaceState(sqlite: Database.Database): void {
   sqlite.exec(`

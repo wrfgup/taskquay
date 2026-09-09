@@ -31,6 +31,8 @@ export interface LocalAgentRunResult {
 }
 
 export interface LocalAgentRunCallbacks {
+  /** Positive adapter evidence: failure occurred before any inference dispatch. */
+  onNotRequested?: () => void;
   onThreadInfo?: (observation: ProviderThreadObservation) => void | Promise<void>;
   onNameResult?: (success: boolean) => void;
   onRequest?: () => void | Promise<void>;

@@ -11,6 +11,7 @@ import { LocalAgentRuntimePool } from "./local-agent-runtime-pool.js";
 import type { LocalAgentDriver, LocalAgentRuntime, LocalAgentRunInput } from "./local-agent-runtime.js";
 import { ProcessSessionManager } from "./process-sessions.js";
 import { ExecutionCoordinator, ExecutionConflictError } from "./execution-coordinator.js";
+import { WorkLedger } from "./work-ledger.js";
 
 function fixture(t: test.TestContext, maximum = 1) {
   const root = mkdtempSync(join(tmpdir(), "devspace-admission-"));
@@ -101,6 +102,12 @@ test("host operation prevents provider startup and close releases completed clai
   const claim = owner.acquire({ workspaceRoot: f.checkout, kind: "command" });
   const denied = await f.manager.start({ ...f.scope, target: "codex", prompt: "no competing build" });
   assert(denied.isErr()); assert.equal(f.calls.length, 0);
+  const ledger = new WorkLedger(f.stateDir);
+  try {
+    const execution = ledger.db.prepare("select status,usage_quality,boundary_reason from console_executions order by rowid desc limit 1").get() as any;
+    assert.equal(execution.status, "failed"); assert.equal(execution.usage_quality, "not_used");
+    assert.equal(execution.boundary_reason, "confirmed_before_inference");
+  } finally { ledger.close(); }
   claim.release(); owner.close();
   assert((await f.manager.start({ ...f.scope, target: "codex", prompt: "held" })).isOk());
   await settleCalls(f.calls, 1);

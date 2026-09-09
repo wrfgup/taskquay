@@ -23,7 +23,7 @@ rl.createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(li
  if(m.method==='account/read')return send({id:m.id,result:{account:{type:'chatgpt',email:'fixture@example.invalid'}}});
  if(m.method==='account/rateLimits/read')return send({id:m.id,error:{code:-32601,message:'Optional metadata unavailable in this lifecycle fixture'}});
  if(m.method==='thread/start'||m.method==='thread/resume')return send({id:m.id,result:{thread:{id:'thread',turns}}});
- if(m.method==='thread/read')return send({id:m.id,result:{thread:{id:'thread',turns}}});
+ if(m.method==='thread/read')return send({id:m.id,result:{thread:{id:'thread',turns,historyMode:turns.length>=3?'paginated':'inline'}}});
  if(m.method==='thread/name/set'||m.method==='thread/unsubscribe')return send({id:m.id,result:{}});
  if(m.method==='turn/start'){const id='t'+(turns.length+1),failed=m.params.input[0].text==='fail';total+=100;
  const usage=()=>({method:'thread/tokenUsage/updated',params:{threadId:'thread',turnId:id,tokenUsage:{total:{inputTokens:total*.8,outputTokens:total*.2,totalTokens:total,cachedInputTokens:total*.4,reasoningOutputTokens:total*.1}}}});
@@ -39,7 +39,7 @@ rl.createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(li
   const state = join(root, "state"); const store = new LocalAgentStore(state); const ledger = new WorkLedger(state);
   const agent = store.create({ workspaceRoot: project, profileName: "codex", provider: "codex" });
   const run = ledger.begin({ root: project, title: "Protocol fixture", workItemId: "fixture", runKey: "one", origin: { entryPoint: "other_mcp", evidence: "server_entry" } });
-  const runtime = new CodexAppServerRuntime({ command, env: process.env, version: "fixture" });
+  const runtime = new CodexAppServerRuntime({ command, env: process.env, version: "0.153.4" });
   const pool = new LocalAgentRuntimePool();
   let manager: LocalAgentManager | undefined;
   const driver: LocalAgentDriver = { provider: "codex", runtimeKey: () => "fixture-pooled-runtime",
@@ -96,4 +96,22 @@ rl.createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(li
   assert.equal(usageRows.length, 1);
   assert.equal(usageRows[0]!.turn_id, "t3");
   assert.equal(JSON.parse(usageRows[0]!.totals).totalTokens, 400);
+  const successful = ledger.successfulExecution(agent.id, run.id)!;
+  assert.equal(successful.executionId, managed.id); assert.equal(successful.responseAvailable, 1);
+  const refused = await manager.continue(agent.id, "guard must preserve previous success",
+    { requestKey: "paginated-followup", workRunId: run.id }, { workspaceRoot: project });
+  assert(refused.isOk());
+  while (manager.activeTurnCount) await delay(10);
+  const failed = ledger.latestExecution(agent.id)!;
+  assert.equal(failed.status, "failed"); assert.equal(failed.usage_quality, "not_used");
+  assert.equal(failed.boundary_reason, "confirmed_before_inference");
+  assert.equal(ledger.receipt(run.id).codexUsage?.totalTokens, 400);
+  assert.equal(ledger.receipt(run.id).usageStatus, "complete");
+  assert.equal(ledger.successfulExecution(agent.id, run.id)!.executionId, managed.id);
+  assert.equal(store.getById(agent.id)!.latestResponse, "fixture response");
+  assert.equal(store.getById(agent.id)!.providerSessionId, "thread");
+  assert.match(store.getById(agent.id)!.error!, /PAGINATED_HISTORY_UNSUPPORTED/);
+  const after = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(after.filter((m) => m.method === "turn/start").length, 3);
+  assert.equal(after.filter((m) => m.method === "thread/start").length, 1);
 });

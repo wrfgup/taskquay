@@ -4,6 +4,7 @@ import { digest, WorkLedger, WorkFinishBlockedError, type WorkOrigin } from "../
 import type { ToolRegistrationContext } from "./types.js";
 import { deliverySchema, publishDelivery, WorkRunViews } from "../work-run-views.js";
 import { diagnosticError } from "../server-diagnostics.js";
+import { jsonReply, replyBytes, REPLY_BYTES, textPage } from "../bounded-reply.js";
 
 /** Registration-only targets deliberately have no transport/server instance.
  * Legacy direct callers may expose a client label; otherwise leave it unknown
@@ -31,7 +32,7 @@ const evidenceSchema = z.array(z.object({ label: z.string().max(200), reference:
 export function registerWorkTaskTool({ server, config, workspaces, processSessions }: ToolRegistrationContext): void {
   server.registerTool("work_task", {
     title: "Track work and return Codex token receipt",
-    description: "Begin a top-level work run BEFORE direct host reads, commands or delegation. Use snapshot/history only when exposed by the host schema; otherwise use get and available observe tools. The server cannot force a host schema refresh. Snapshot provides repeatable status; history provides revision-bound pages; get retains full legacy history and usage. Record bounded verification evidence. Finish only after all child work stops and acceptance is explicit. This tool never starts model inference. Model labels are display labels, not verified model identities.",
+    description: "Begin a top-level work run BEFORE direct host reads, commands or delegation. Use snapshot/history only when exposed by the host schema; otherwise use get and available observe tools. The server cannot force a host schema refresh. Get returns a bounded execution/acceptance summary, usage and first history page, including persisted command evidence; continue with cursor when supported. Get with operationId/evidenceOffset pages selected evidence. Record bounded verification evidence. Finish only after all child work stops and acceptance is explicit. Missing receipts do not prove non-execution. This tool never starts model inference.",
     inputSchema: {
       workspaceId: z.string(), action: z.enum(["begin", "record", "finish", "get", "list", "snapshot", "history"]),
       workRunId: z.string().optional(), workItemId: key.optional(), runKey: key.optional(),
@@ -44,12 +45,13 @@ export function registerWorkTaskTool({ server, config, workspaces, processSessio
       knownRevision: z.string().optional(),
       expectedSourceHash: z.string().regex(/^[a-f0-9]{64}$/).optional().describe("Compare publication with the consumer's expected source manifest, without reading the checkout."),
       cursor: z.string().max(2000).optional(), limit: z.number().int().min(1).max(100).optional(),
+      operationId: z.string().optional(), evidenceOffset: z.number().int().nonnegative().optional(),
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input, extra) => {
     const workspace = await workspaces.getWorkspace(input.workspaceId);
     const ledger = new WorkLedger(config.stateDir);
-    const reply = (data: unknown, isError = false) => ({ content: [{ type: "text" as const, text: JSON.stringify(data) }], isError });
+    const reply = (data: any, isError = false) => ({ ...jsonReply(data), isError });
     try {
       if (input.action === "begin") {
         if (!input.workItemId || !input.runKey || !input.title) throw new Error("begin requires workItemId, runKey and title.");
@@ -61,6 +63,13 @@ export function registerWorkTaskTool({ server, config, workspaces, processSessio
       if (!input.workRunId) throw new Error("workRunId is required.");
       const run = ledger.requireScope(input.workRunId, workspace.root, workspace.id);
       const views = new WorkRunViews(ledger);
+      if (input.action === "get" && input.operationId) {
+        const operation = ledger.db.prepare("select evidence from console_operations where id=? and run_id=?").get(input.operationId, run.id) as { evidence: string } | undefined;
+        if (!operation) throw new Error("Operation is outside this work run.");
+        const { textPage } = await import("../bounded-reply.js");
+        return reply({ workRunId: run.id, operationId: input.operationId, evidenceSha256: digest(operation.evidence),
+          evidencePage: textPage(operation.evidence, input.evidenceOffset), hostAcknowledgment: "unknown" });
+      }
       if (input.action === "snapshot") return reply(views.snapshot(run.id, input.knownRevision, input.expectedSourceHash));
       if (input.action === "history") return reply(views.history(run.id, input.cursor, input.limit));
       if (input.action === "record") {
@@ -82,7 +91,15 @@ export function registerWorkTaskTool({ server, config, workspaces, processSessio
         return reply(ledger.finish(run.id, { status: input.status, acceptance: input.acceptance,
           summary: input.summary, evidence: input.evidence ?? [] }));
       }
-      return reply(ledger.detail(run.project_id, run.id));
+      const { evidence, ...receipt } = ledger.receipt(run.id);
+      let limit = input.limit ?? 5;
+      let value;
+      do {
+        value = { ...receipt, summary: textPage(run.summary, 0, 2000).text, completionSnapshot: views.snapshot(run.id), ...views.history(run.id, input.cursor, limit),
+          evidenceCount: evidence.length, hostAcknowledgment: "unknown" };
+        if (replyBytes(value) <= REPLY_BYTES) return reply(value);
+      } while (--limit >= 1);
+      throw new Error("Work summary exceeds response budget; use snapshot/history.");
     } catch (error) { return reply({ code: "WORK_STATE", message: error instanceof Error ? error.message : "Work operation failed.",
       ...(error instanceof WorkFinishBlockedError ? { blocking: error.blocking, nextAction: error.nextAction } : {}) }, true); }
     finally { ledger.close(); }
@@ -91,20 +108,30 @@ export function registerWorkTaskTool({ server, config, workspaces, processSessio
 
 /** A short-lived ledger handle; no raw command/source text is collected. */
 export async function trackedWork<T>(stateDir: string, workRunId: string | undefined,
-  scope: { root: string; workspaceId: string }, kind: string, action: () => Promise<T>): Promise<T> {
+  scope: { root: string; workspaceId: string }, kind: string, action: (operationId?: string) => Promise<T>,
+  metadata?: { argumentFingerprint: string; selectionCount: number; requestKey?: string }): Promise<T> {
   if (!workRunId) return action();
   const ledger = new WorkLedger(stateDir);
   let operationId: string | undefined;
   try {
     ledger.requireScope(workRunId, scope.root, scope.workspaceId);
-    operationId = ledger.operation({ runId: workRunId, requestKey: `${kind}:${randomUUID()}`,
-      kind, label: kind, status: "running" });
-    const result = await action();
+    const requestKey = `${kind}:${metadata?.requestKey ?? randomUUID()}`;
+    operationId = ledger.db.transaction(() => {
+      if (metadata?.requestKey) {
+        const previous = ledger.db.prepare("select id from console_operations where run_id=? and request_key=?").get(workRunId, requestKey) as { id: string } | undefined;
+        if (previous) throw new Error(`RECORDED_OPERATION: ${previous.id}; use work_task get in this run. No mutation was replayed. A reused key cannot request new work.`);
+      }
+      return ledger.operation({ runId: workRunId, requestKey, kind, label: kind, status: "running" });
+    }).immediate();
+    const result = await action(operationId);
     const failed = result !== null && typeof result === "object" && "isError" in result && result.isError === true;
     ledger.endOperation(operationId, failed ? "failed" : "completed", failed ? [{
       label: "Tool returned isError; inspect state before retrying",
       reference: JSON.stringify({ version: 1, boundary: "tool_result", retry: "reconcile_before_replay" }), outcome: "failed",
-    }] : []); return result;
+    }] : [{ label: "Produced tool result; host acknowledgment unknown", outcome: "passed",
+      reference: JSON.stringify({ version: 1, boundary: "tool_result", ...metadata, producedBytes: Buffer.byteLength(JSON.stringify(result ?? null)),
+        producedSha256: digest(result ?? null), hostAcknowledgment: "unknown",
+        ...(result && typeof result === "object" && "contextId" in result ? { contextId: result.contextId } : {}) }) }]); return result;
   } catch (error) {
     if (operationId) {
       try { ledger.endOperation(operationId, "failed", [{ label: "Tool threw; inspect state before retrying",
