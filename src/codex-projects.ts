@@ -85,7 +85,7 @@ export async function prepareProjectRoots(paths: string[], allowedRoots: string[
     }
     assertAllowedPath(await realpath(parent), allowed);
     const missing = parent !== path;
-    if (missing && !create) throw new Error("Directory does not exist. Verify the intended path. Only if directory creation is authorized and your host exposes createDirectory, repeat open_workspace with createDirectory=true; otherwise have the directory created through an authorized available tool or by the user, then open it. Do not guess or auto-create a different path.");
+    if (missing && !create) throw new Error("Directory does not exist. Verify the intended path. Only if directory creation is authorized and your host exposes create_directory, repeat open_workspace with create_directory=true; otherwise have the directory created through an authorized available tool or by the user, then open it. Do not guess or auto-create a different path.");
     if (!(await stat(parent)).isDirectory()) throw new Error("Project root/parent must be a directory.");
     planned.push({ path, missing });
   }

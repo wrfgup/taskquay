@@ -27,13 +27,13 @@ test("host can capture, search and version exact source through MCP without any 
   const [a, b] = InMemoryTransport.createLinkedPair(); await server.connect(a); await client.connect(b);
   t.after(async () => { await client.close(); await server.close(); processSessions.shutdown(); rmSync(root, { recursive: true, force: true }); });
   const call = async (args: Record<string, unknown>) => {
-    const response = await client.callTool({ name: "workspace_context", arguments: { workspaceId: "ws", ...args } });
+    const response = await client.callTool({ name: "workspace_context", arguments: { workspace_id: "ws", ...args } });
     const text = (response.content as Array<{ type: string; text: string }>).find((item) => item.type === "text")!.text;
     return { error: response.isError, value: response.isError ? text : JSON.parse(text) };
   };
   const listed = await call({ action: "list" });
   assert.equal(listed.value.providerInvoked, false); assert(listed.value.entries.some((entry: { name: string }) => entry.name === "source.ts"));
-  const captured = await call({ action: "capture", files: [{ path: "source.ts", maxLines: 1 }] });
+  const captured = await call({ action: "capture", files: [{ path: "source.ts", max_lines: 1 }] });
   assert(!captured.error); assert.equal(captured.value.entries[0].lines[0].text, "// 主控直接读取");
   assert.equal(captured.value.entries[0].nextLine, 2); assert.match(captured.value.refs[0].sha256, /^[0-9a-f]{64}$/);
   const searched = await call({ action: "search", query: "value", files: [{ path: "source.ts" }] });

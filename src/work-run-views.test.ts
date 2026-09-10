@@ -25,7 +25,15 @@ async function fixture(t: TestContext) {
     const [a, b] = InMemoryTransport.createLinkedPair(); await server.connect(a); await client.connect(b);
     pairs.push({ client, server });
     return { client, call: async (input: Record<string, unknown>) => {
-      const result = await client.callTool({ name: "work_task", arguments: { workspaceId: "ws", ...input } });
+      const modelInput = Object.fromEntries(Object.entries(input).map(([key, value]) => [
+        key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`),
+        value && typeof value === "object" && !Array.isArray(value)
+          ? Object.fromEntries(Object.entries(value).map(([nestedKey, nestedValue]) => [
+              nestedKey.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`), nestedValue,
+            ]))
+          : value,
+      ]));
+      const result = await client.callTool({ name: "work_task", arguments: { workspace_id: "ws", ...modelInput } });
       const text = (result.content as { text: string }[])[0]!.text;
       let data;
       try { data = JSON.parse(text); } catch { assert(result.isError); data = { message: text }; }
@@ -48,7 +56,7 @@ async function fixture(t: TestContext) {
 test("real MCP publishes typed delivery, recovers same revision after disconnect and keeps APK after failed acceptance", async (t) => {
   const f = await fixture(t);
   const tools = await f.client.listTools();
-  assert(JSON.stringify(tools).includes("snapshot")); assert(JSON.stringify(tools).includes("expectedSourceHash"));
+  assert(JSON.stringify(tools).includes("snapshot")); assert(JSON.stringify(tools).includes("expected_source_hash"));
   const published = await f.record(); assert(!published.error);
   const revision = published.data.snapshot.revision;
   assert.equal((await f.record()).data.snapshot.revision, revision, "idempotency never refreshes revision");

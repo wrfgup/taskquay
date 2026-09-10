@@ -2,7 +2,7 @@ import * as z from "zod/v4";
 import { randomUUID } from "node:crypto";
 import { digest, WorkLedger, WorkFinishBlockedError, type WorkOrigin } from "../work-ledger.js";
 import type { ToolRegistrationContext } from "./types.js";
-import { deliverySchema, publishDelivery, WorkRunViews } from "../work-run-views.js";
+import { publishDelivery, WorkRunViews } from "../work-run-views.js";
 import { diagnosticError } from "../server-diagnostics.js";
 import { jsonReply, replyBytes, REPLY_BYTES, textPage } from "../bounded-reply.js";
 
@@ -28,27 +28,53 @@ export function hostOrigin(extra: { _meta?: Record<string, unknown>; authInfo?: 
 const key = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$/);
 const evidenceSchema = z.array(z.object({ label: z.string().max(200), reference: z.string().max(1200),
   outcome: z.enum(["passed", "failed", "not_run"]) }).strict()).max(40);
+const modelDeliverySchema = z.object({
+  schema: z.literal("devspace.delivery"),
+  version: z.literal(1),
+  source_hash: z.string().regex(/^[a-f0-9]{64}$/),
+  sources: z.array(z.object({ path: z.string(), sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict()).min(1).max(8),
+  status: z.enum(["passed", "failed", "not_run"]),
+  artifacts: z.array(z.object({ path: z.string(), sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict()).max(4),
+}).strict();
 
 export function registerWorkTaskTool({ server, config, workspaces, processSessions }: ToolRegistrationContext): void {
   server.registerTool("work_task", {
     title: "Track work and return Codex token receipt",
     description: "Begin a top-level work run BEFORE direct host reads, commands or delegation. Use snapshot/history only when exposed by the host schema; otherwise use get and available observe tools. The server cannot force a host schema refresh. Get returns a bounded execution/acceptance summary, usage and first history page, including persisted command evidence; continue with cursor when supported. Get with operationId/evidenceOffset pages selected evidence. Record bounded verification evidence. Finish only after all child work stops and acceptance is explicit. Missing receipts do not prove non-execution. This tool never starts model inference.",
     inputSchema: {
-      workspaceId: z.string(), action: z.enum(["begin", "record", "finish", "get", "list", "snapshot", "history"]),
-      workRunId: z.string().optional(), workItemId: key.optional(), runKey: key.optional(),
-      title: z.string().min(1).max(200).optional(), hostModelLabel: z.string().max(80).optional(),
-      requestKey: key.optional(), kind: z.string().max(64).optional(), label: z.string().max(200).optional(),
+      workspace_id: z.string(), action: z.enum(["begin", "record", "finish", "get", "list", "snapshot", "history"]),
+      work_run_id: z.string().optional(), work_item_id: key.optional(), run_key: key.optional(),
+      title: z.string().min(1).max(200).optional(), host_model_label: z.string().max(80).optional(),
+      request_key: key.optional(), kind: z.string().max(64).optional(), label: z.string().max(200).optional(),
       status: z.enum(["completed", "failed", "cancelled"]).optional(),
       acceptance: z.enum(["passed", "failed", "not_applicable"]).optional(),
       summary: z.string().max(4000).optional(), evidence: evidenceSchema.optional(),
-      delivery: deliverySchema.optional().describe("Explicit host verification checkpoint. sourceHash is SHA-256 of JSON.stringify(sources) in given order; files are checked only on publication, never on snapshot. No config/key files. Not deployment acceptance."),
-      knownRevision: z.string().optional(),
-      expectedSourceHash: z.string().regex(/^[a-f0-9]{64}$/).optional().describe("Compare publication with the consumer's expected source manifest, without reading the checkout."),
+      delivery: modelDeliverySchema.optional().describe("Explicit host verification checkpoint. source_hash is SHA-256 of JSON.stringify(sources) in given order; files are checked only on publication, never on snapshot. No config/key files. Not deployment acceptance."),
+      known_revision: z.string().optional(),
+      expected_source_hash: z.string().regex(/^[a-f0-9]{64}$/).optional().describe("Compare publication with the consumer's expected source manifest, without reading the checkout."),
       cursor: z.string().max(2000).optional(), limit: z.number().int().min(1).max(100).optional(),
-      operationId: z.string().optional(), evidenceOffset: z.number().int().nonnegative().optional(),
+      operation_id: z.string().optional(), evidence_offset: z.number().int().nonnegative().optional(),
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (input, extra) => {
+  }, async ({ workspace_id, work_run_id, work_item_id, run_key, host_model_label, request_key,
+    delivery, known_revision, expected_source_hash, operation_id, evidence_offset, ...rest }, extra) => {
+    const input = {
+      ...rest,
+      workspaceId: workspace_id,
+      workRunId: work_run_id,
+      workItemId: work_item_id,
+      runKey: run_key,
+      hostModelLabel: host_model_label,
+      requestKey: request_key,
+      delivery: delivery ? (() => {
+        const { source_hash, ...value } = delivery;
+        return { ...value, sourceHash: source_hash };
+      })() : undefined,
+      knownRevision: known_revision,
+      expectedSourceHash: expected_source_hash,
+      operationId: operation_id,
+      evidenceOffset: evidence_offset,
+    };
     const workspace = await workspaces.getWorkspace(input.workspaceId);
     const ledger = new WorkLedger(config.stateDir);
     const reply = (data: any, isError = false) => ({ ...jsonReply(data), isError });

@@ -197,7 +197,7 @@ test("a deleted checkout needs explicit recreation and receives a new workspace"
   await rm(project, { recursive: true, force: true });
   await assert.rejects(
     () => registry.openWorkspace(project, { conversationScopeId: "chat-1" }),
-    /createDirectory=true/,
+    /create_directory=true/,
   );
   const replacement = await registry.openWorkspace({ path: project, createDirectory: true }, { conversationScopeId: "chat-1" });
 

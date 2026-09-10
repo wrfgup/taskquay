@@ -2,7 +2,10 @@ import * as z from "zod/v4";
 import { executionContractSchema } from "../execution-contract-schema.js";
 import { registerAgentTaskTool } from "./agent-task.js";
 import { applyPatch } from "../apply-patch.js";
-import type { ProcessSnapshot } from "../process-sessions.js";
+import {
+  MAX_PROCESS_YIELD_MS,
+  type ProcessSnapshot,
+} from "../process-sessions.js";
 import { trackedWork } from "./work-task.js";
 import { argumentFingerprint } from "../mcp-request-diagnostics.js";
 import { textPage } from "../bounded-reply.js";
@@ -59,17 +62,17 @@ function processOutputSchema(): z.ZodRawShape {
   return resultOutputSchema({
     execution: executionContractSchema,
     phase: z.enum(["running", "root_exited_stdio_open", "closed"]),
-    rootExitedElapsedMs: z.number().nonnegative().optional(),
-    terminalReplay: z.boolean(),
-    outputScope: z.literal("since_previous_read"),
-    operationId: z.string().optional(),
-    workRunId: z.string().optional(),
-    sessionId: z.number().optional(),
+    root_exited_elapsed_ms: z.number().nonnegative().optional(),
+    terminal_replay: z.boolean(),
+    output_scope: z.literal("since_previous_read"),
+    operation_id: z.string().optional(),
+    work_run_id: z.string().optional(),
+    session_id: z.number().optional(),
     running: z.boolean(),
-    exitCode: z.number().int().optional(),
+    exit_code: z.number().int().optional(),
     signal: z.string().optional(),
-    wallTimeMs: z.number().nonnegative(),
-    outputTruncated: z.boolean(),
+    wall_time_ms: z.number().nonnegative(),
+    output_truncated: z.boolean(),
   });
 }
 
@@ -82,19 +85,24 @@ function processToolResponse(snapshot: ProcessSnapshot) {
     content,
     structuredContent: {
       result,
-      execution: snapshot.execution,
+      execution: {
+        platform: snapshot.execution.platform,
+        shell: snapshot.execution.shell,
+        transport: snapshot.execution.transport,
+        pty_capability: snapshot.execution.ptyCapability,
+      },
       phase: snapshot.phase,
-      rootExitedElapsedMs: snapshot.rootExitedElapsedMs,
-      terminalReplay: snapshot.terminalReplay,
-      outputScope: snapshot.outputScope,
-      operationId: snapshot.operationId,
-      workRunId: snapshot.workRunId,
-      sessionId: snapshot.sessionId,
+      root_exited_elapsed_ms: snapshot.rootExitedElapsedMs,
+      terminal_replay: snapshot.terminalReplay,
+      output_scope: snapshot.outputScope,
+      operation_id: snapshot.operationId,
+      work_run_id: snapshot.workRunId,
+      session_id: snapshot.sessionId,
       running: snapshot.running,
-      exitCode: snapshot.exitCode,
+      exit_code: snapshot.exitCode,
       signal: snapshot.signal,
-      wallTimeMs: snapshot.wallTimeMs,
-      outputTruncated: snapshot.outputTruncated,
+      wall_time_ms: snapshot.wallTimeMs,
+      output_truncated: snapshot.outputTruncated,
     },
   };
 }
@@ -109,9 +117,9 @@ function registerApplyPatchTool(context: ToolRegistrationContext): void {
       description:
         "Apply one Codex-style patch in a workspace. Supports adding, overwriting, updating, deleting, and moving files. Use this for all file modifications. Paths must be relative to the workspace.",
       inputSchema: {
-        workspaceId: z.string().describe(workspaceIdDescription),
-        workRunId: z.string().optional(),
-        requestKey: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/).optional().describe("Stable mutation identity within workRunId. A repeated key returns a recovery error without reapplying the patch."),
+        workspace_id: z.string().describe(workspaceIdDescription),
+        work_run_id: z.string().optional(),
+        request_key: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/).optional().describe("Stable mutation identity within work_run_id. A repeated key returns a recovery error without reapplying the patch."),
         patch: z
           .string()
           .describe(
@@ -124,14 +132,17 @@ function registerApplyPatchTool(context: ToolRegistrationContext): void {
         files: z.array(
           z.object({
             path: z.string(),
-            previousPath: z.string().optional(),
+            previous_path: z.string().optional(),
             operation: z.enum(["add", "update", "delete", "move"]),
           }),
         ),
       }),
       annotations: EDIT_TOOL_ANNOTATIONS,
     },
-    async ({ workspaceId, workRunId, patch, requestKey }) => {
+    async ({ workspace_id, work_run_id, patch, request_key }) => {
+      const workspaceId = workspace_id;
+      const workRunId = work_run_id;
+      const requestKey = request_key;
       if (requestKey && !workRunId) throw new Error("requestKey requires workRunId.");
       let operationId: string | undefined;
       const startedAt = performance.now();
@@ -154,10 +165,15 @@ function registerApplyPatchTool(context: ToolRegistrationContext): void {
         content,
         structuredContent: {
           result,
-          operationId, workRunId, hostAcknowledgment: "unknown",
+          operation_id: operationId,
+          work_run_id: workRunId,
+          host_acknowledgment: "unknown",
           additions: applied.additions,
           removals: applied.removals,
-          files: applied.files,
+          files: applied.files.map(({ previousPath, ...file }) => ({
+            ...file,
+            previous_path: previousPath,
+          })),
         },
       };
     },
@@ -172,12 +188,12 @@ function registerCodexProcessTools(context: ToolRegistrationContext): void {
     {
       title: "Execute command",
       description:
-        "Run a command with the local user's authority. Commands are not sandboxed; workspace validation only selects the initial working directory. Returns the result when it exits during the yield window, otherwise returns a sessionId for write_stdin. Use this for file inspection, tests, builds, package scripts, and long-running processes. After failure or a missing response, inspect the existing work run before retrying; side effects may already have occurred. Never automatically replay deployments or other mutations.",
+        "Run a command with the local user's authority. Commands are not sandboxed; workspace validation only selects the initial working directory. Returns the result when it exits during the yield window, otherwise returns a session_id to continue with write_stdin. Use this for file inspection, tests, builds, package scripts, and long-running processes. After failure or a missing response, inspect the existing work run before retrying; side effects may already have occurred. Never automatically replay deployments or other mutations.",
       inputSchema: {
-        workspaceId: z.string().describe(workspaceIdDescription),
+        workspace_id: z.string().describe(workspaceIdDescription),
         cmd: z.string().min(1).describe("Shell command to execute."),
-        requestKey: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/).optional().describe("Stable command identity within workRunId; a repeated key never runs the command again. Recover using work_task get."),
-        workRunId: z.string().optional().describe("Work run whose command remains active until the process exits, not merely until the first yield."),
+        request_key: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/).optional().describe("Stable command identity within work_run_id; a repeated key never runs the command again. Recover using work_task get."),
+        work_run_id: z.string().optional().describe("Work run whose command remains active until the process exits, not merely until the first yield."),
         resources: z.array(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/)).max(16).optional()
           .describe("Additional exclusive resource keys for shared build outputs/devices. Checkout exclusion is automatic."),
         tty: z
@@ -200,22 +216,22 @@ function registerCodexProcessTools(context: ToolRegistrationContext): void {
           .max(1_000)
           .optional()
           .describe("Initial PTY height. Defaults to 24."),
-        workingDirectory: z
+        working_directory: z
           .string()
           .optional()
           .describe(
             "Working directory relative to the workspace root. Defaults to the workspace root.",
           ),
-        yieldTimeMs: z
+        yield_time_ms: z
           .number()
           .int()
           .min(0)
-          .max(30_000)
+          .max(MAX_PROCESS_YIELD_MS)
           .optional()
           .describe(
-            "Milliseconds to wait before returning a running session. Defaults to 10000.",
+            "Milliseconds to wait before returning a running session. Defaults to 10000, maximum 12000. Use write_stdin for work that runs longer.",
           ),
-        maxOutputTokens: z
+        max_output_tokens: z
           .number()
           .int()
           .positive()
@@ -227,19 +243,25 @@ function registerCodexProcessTools(context: ToolRegistrationContext): void {
       annotations: shellToolAnnotations(config),
     },
     async ({
-      workspaceId,
+      workspace_id,
       cmd,
-      requestKey,
-      workRunId,
+      request_key,
+      work_run_id,
       tty,
       columns,
       rows,
-      workingDirectory,
-      yieldTimeMs,
-      maxOutputTokens,
+      working_directory,
+      yield_time_ms,
+      max_output_tokens,
       resources,
     }) => {
       const startedAt = performance.now();
+      const workspaceId = workspace_id;
+      const workingDirectory = working_directory;
+      const yieldTimeMs = yield_time_ms;
+      const maxOutputTokens = max_output_tokens;
+      const requestKey = request_key;
+      const workRunId = work_run_id;
       const snapshot = await runLoggedToolOperation(
         config,
         {
@@ -284,10 +306,10 @@ function registerCodexProcessTools(context: ToolRegistrationContext): void {
       description:
         "Poll or write characters to a process returned by exec_command. Empty polls replay the same bounded terminal receipt within five minutes, subject to a count cap. Running polls drain output; earlier consumed text is not recoverable. Terminal replay ignores new output budgets. Never resend nonempty chars blindly. Pass \\u0003 to send Ctrl-C. Use work_task snapshot/history only if exposed by the host; otherwise get and available observe tools. Do not restart a command to recover output.",
       inputSchema: {
-        workspaceId: z
+        workspace_id: z
           .string()
           .describe("Workspace identifier used to start the process."),
-        sessionId: z
+        session_id: z
           .number()
           .describe("Process session identifier returned by exec_command."),
         chars: z
@@ -310,16 +332,16 @@ function registerCodexProcessTools(context: ToolRegistrationContext): void {
           .max(1_000)
           .optional()
           .describe("Resize a PTY to this height."),
-        yieldTimeMs: z
+        yield_time_ms: z
           .number()
           .int()
           .min(0)
-          .max(30_000)
+          .max(MAX_PROCESS_YIELD_MS)
           .optional()
           .describe(
-            "Milliseconds to wait for process output or completion. Defaults to 10000.",
+            "Milliseconds to wait for process output or completion. Maximum 12000; polling defaults to 5000 and interactive writes to 250.",
           ),
-        maxOutputTokens: z
+        max_output_tokens: z
           .number()
           .int()
           .positive()
@@ -331,15 +353,19 @@ function registerCodexProcessTools(context: ToolRegistrationContext): void {
       annotations: shellToolAnnotations(config),
     },
     async ({
-      workspaceId,
-      sessionId,
+      workspace_id,
+      session_id,
       chars,
       columns,
       rows,
-      yieldTimeMs,
-      maxOutputTokens,
+      yield_time_ms,
+      max_output_tokens,
     }) => {
       const startedAt = performance.now();
+      const workspaceId = workspace_id;
+      const sessionId = session_id;
+      const yieldTimeMs = yield_time_ms;
+      const maxOutputTokens = max_output_tokens;
       const snapshot = await runLoggedToolOperation(
         config,
         { tool: "write_stdin", workspaceId },

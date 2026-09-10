@@ -28,7 +28,7 @@ export function traceMcpRequest(req: Request, res: Response, requestId: string, 
   const session = object(params._meta)["openai/session"];
   const context = { requestId, method: known(body.method, methods),
     ...(body.method === "tools/call" ? { tool: known(params.name, tools), action: known(args.action, actions),
-      workspaceId: identity(args.workspaceId, "ws"), workRunId: identity(args.workRunId, "run"), agentId: identity(args.agentId, "agt") } : {}),
+      workspaceId: identity(args.workspace_id ?? args.workspaceId, "ws"), workRunId: identity(args.work_run_id ?? args.workRunId, "run"), agentId: identity(args.agent_id ?? args.agentId, "agt") } : {}),
     argumentFingerprint: argumentFingerprint(args), selectionCount: Array.isArray(args.files) ? args.files.length : typeof args.path === "string" ? 1 : 0,
     conversationHash: typeof session === "string" && session.length <= 1024
       ? createHash("sha256").update(JSON.stringify(session)).digest("hex").slice(0, 24) : undefined };
@@ -65,7 +65,7 @@ export function traceMcpRequest(req: Request, res: Response, requestId: string, 
           const structured = object(payload.structuredContent);
           const content = Array.isArray(payload.content) ? payload.content : [];
           result = { resultInspection: "inspected", rpcErrorCode: Number.isInteger(error.code) ? error.code : undefined,
-            operationId: identity(structured.operationId, "op"),
+            operationId: identity(structured.operation_id ?? structured.operationId, "op"),
             toolError: payload.isError === true, contentBlocks: content.length,
             textBytes: content.reduce((n: number, block: any) => n + (typeof block?.text === "string" ? Buffer.byteLength(block.text) : 0), 0),
             structuredContentPresent: payload.structuredContent !== undefined };
@@ -74,8 +74,8 @@ export function traceMcpRequest(req: Request, res: Response, requestId: string, 
             if (block?.type !== "text" || typeof block.text !== "string") continue;
             try {
               const value = object(JSON.parse(block.text));
-              result.operationId = identity(value.operationId, "op") ?? result.operationId;
-              result.receiptPresent = result.receiptPresent === true || "completionReceipt" in value || "completionSnapshot" in value || "receipt" in value || "workRunId" in value;
+              result.operationId = identity(value.operation_id ?? value.operationId, "op") ?? result.operationId;
+              result.receiptPresent = result.receiptPresent === true || "completionReceipt" in value || "completionSnapshot" in value || "receipt" in value || "workRunId" in value || "work_run_id" in value;
               if (typeof value.code === "string") result.toolErrorCode = known(value.code, errorCodes);
               if (typeof value.message === "string" && payload.isError === true) result.errorFingerprint = createHash("sha256").update(value.message).digest("hex").slice(0, 16);
             } catch { /* Non-JSON text is never returned to logs. */ }

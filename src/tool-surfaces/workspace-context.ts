@@ -14,21 +14,33 @@ export function registerWorkspaceContextTool({ server, config, workspaces, proce
     title: "Inspect workspace directly without Codex",
     description: "Host-first local inspection: list one directory, capture selected source ranges and full-file hashes, or search a literal in explicitly selected files. No model invocation, automatic repository survey or recursive traversal. Prefer this and read for context gathering before deciding whether a Codex worker is needed. Follow applicable project instructions first. Captures are versioned evidence, not a shared model memory or immutable checkout.",
     inputSchema: {
-      workspaceId: z.string(),
-      workRunId: z.string().optional(),
+      workspace_id: z.string(),
+      work_run_id: z.string().optional(),
       action: z.enum(["list", "capture", "search"]),
       directory: z.string().optional(),
       offset: z.number().int().min(0).max(100_000).optional(),
-      selectionIndex: z.number().int().min(0).max(23).optional(),
-      lineOffset: z.number().int().min(0).max(4 * 1024 * 1024).optional().describe("Unicode code-point offset in the first selected line. Use nextSelection to resume without losing long-line content."),
+      selection_index: z.number().int().min(0).max(23).optional(),
+      line_offset: z.number().int().min(0).max(4 * 1024 * 1024).optional().describe("Unicode code-point offset in the first selected line. Use next_selection to resume without losing long-line content."),
       files: z.array(z.object({ path: z.string().min(1).max(1024),
-        startLine: z.number().int().min(1).max(1_000_000).optional(),
-        maxLines: z.number().int().min(1).max(250).optional(),
+        start_line: z.number().int().min(1).max(1_000_000).optional(),
+        max_lines: z.number().int().min(1).max(250).optional(),
       }).strict()).max(24).optional(),
       query: z.string().min(1).max(256).optional(),
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (input) => {
+  }, async ({ workspace_id, work_run_id, selection_index, line_offset, files, ...rest }) => {
+    const input = {
+      ...rest,
+      workspaceId: workspace_id,
+      workRunId: work_run_id,
+      selectionIndex: selection_index,
+      lineOffset: line_offset,
+      files: files?.map(({ path, start_line, max_lines }) => ({
+        path,
+        startLine: start_line,
+        maxLines: max_lines,
+      })),
+    };
     const workspace = await workspaces.getWorkspace(input.workspaceId);
     const capture = (operationId?: string) => processSessions.readWorkspace(workspace.root, async () => {
       const receipt = { operationId, workRunId: input.workRunId, hostAcknowledgment: "unknown" };

@@ -99,7 +99,7 @@ test("opening a missing checkout requires explicit creation and then reuses its 
   const context = await fixture(t);
   const missingRoot = join(context.root, "missing", "workspace");
 
-  await assert.rejects(context.registry.openWorkspace(missingRoot), /createDirectory=true/);
+  await assert.rejects(context.registry.openWorkspace(missingRoot), /create_directory=true/);
   const opened = await context.registry.openWorkspace({ path: missingRoot, createDirectory: true });
   assert.equal(opened.workspace.root, missingRoot);
   assert.equal((await stat(missingRoot)).isDirectory(), true);

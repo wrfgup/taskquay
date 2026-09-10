@@ -103,7 +103,7 @@ test("directory creation is explicit, repeatable, contained and validates all ro
   const root = await mkdtemp(join(tmpdir(), "devspace-project-create-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const newRoot = join(root, "new", "project");
-  await assert.rejects(prepareProjectRoots([newRoot], [root]), /createDirectory/);
+  await assert.rejects(prepareProjectRoots([newRoot], [root]), /create_directory/);
   await assert.rejects(prepareProjectRoots([newRoot, join(root, "..", "escape")], [root], true), /outside allowed/);
   await assert.rejects(stat(newRoot), { code: "ENOENT" });
   const first = await prepareProjectRoots([newRoot], [root], true);

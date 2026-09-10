@@ -35,7 +35,7 @@ async function finishFixture(t: test.TestContext, nested = false) {
   const runA = begin("a"); const runB = begin("b", other);
   const finishInput = { status: "completed" as const, acceptance: "not_applicable" as const, summary: "fixture", evidence: [] };
   const finish = async (workspaceId = "a") => {
-    const response = await client.callTool({ name: "work_task", arguments: { workspaceId, action: "finish", workRunId: runA.id, ...finishInput } });
+    const response = await client.callTool({ name: "work_task", arguments: { workspace_id: workspaceId, action: "finish", work_run_id: runA.id, ...finishInput } });
     return { error: Boolean(response.isError), data: JSON.parse((response.content as { text: string }[])[0]!.text) };
   };
   return { project, other, ledger, coordinator, runA, runB, finish, finishInput, agent };
@@ -106,17 +106,17 @@ test("actual MCP finish returns the same receipt as the dashboard and waits for 
   const [a, b] = InMemoryTransport.createLinkedPair(); await server.connect(a); await client.connect(b);
   t.after(async () => { await client.close(); await server.close(); processes.shutdown(); ledger.close(); await delay(50); rmSync(root, { recursive: true, force: true }); });
   const call = async (args: Record<string, unknown>) => {
-    const response = await client.callTool({ name: "work_task", arguments: { workspaceId: "ws", ...args } });
+    const response = await client.callTool({ name: "work_task", arguments: { workspace_id: "ws", ...args } });
     const content = response.content as { type: string; text: string }[];
     return { error: Boolean(response.isError), data: JSON.parse(content[0]!.text) };
   };
-  const begun = await call({ action: "begin", workItemId: "host-implementation", runKey: "first", title: "Host-only verification", hostModelLabel: "User display label" });
+  const begun = await call({ action: "begin", work_item_id: "host-implementation", run_key: "first", title: "Host-only verification", host_model_label: "User display label" });
   assert(!begun.error); assert.equal(begun.data.origin.evidence, "client_reported");
   assert.equal(begun.data.usageStatus, "not_used"); const workRunId = begun.data.workRunId;
   await trackedWork(stateDir, workRunId, { root: project, workspaceId: "ws" }, "read", async () => ({ isError: false }));
   let process = await processes.start({ workspaceId: "ws", workspaceRoot: project, cwd: project,
     command: `"${globalThis.process.execPath}" wait.cjs`, yieldTimeMs: 0, workRunId });
-  const finish = { action: "finish", workRunId, status: "completed", acceptance: "passed", summary: "Verified the process and source",
+  const finish = { action: "finish", work_run_id: workRunId, status: "completed", acceptance: "passed", summary: "Verified the process and source",
     evidence: [{ label: "Process exit", reference: "test://isolated-wait-process", outcome: "passed" }] };
   assert(process.running); assert((await call(finish)).error, "A returned process handle is not completion");
   while (process.running) process = await processes.write({ workspaceId: "ws", sessionId: process.sessionId!, yieldTimeMs: 1000 });

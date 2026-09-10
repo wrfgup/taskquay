@@ -21,34 +21,53 @@ export function registerAgentTaskTool(context: ToolRegistrationContext, client?:
     title: "Manage a bounded agent task",
     description: "Delegate only work that needs a Codex judgment or implementation. First inspect files directly with read/workspace_context; these do not invoke Codex. Pass a short host-prepared context, not the whole host history. Related work reuses sessions with workItemId/contextKey; use freshContext for independent review. At most two verified read-only agents share a source; writes/builds remain exclusive and excess work queues without invoking a model. Observe and usage never launch inference.",
     inputSchema: {
-      workspaceId: z.string(),
-      responseOffset: z.number().int().nonnegative().optional(),
-      responseExecutionId: z.string().optional().describe("Retrieve a preserved successful execution in this agent's authorized run without inference."),
+      workspace_id: z.string(),
+      response_offset: z.number().int().nonnegative().optional(),
+      response_execution_id: z.string().optional().describe("Retrieve a preserved successful execution in this agent's authorized run without inference."),
       action: z.enum(["start", "continue", "observe", "list", "claims", "usage", "cancelQueued"]),
       target: z.string().optional(),
-      agentId: z.string().optional(),
+      agent_id: z.string().optional(),
       prompt: z.string().min(1).optional(),
-      taskKey: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/).optional()
+      task_key: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/).optional()
         .describe("Stable identity for one initial task. Repeating the same start returns its existing agent without a new model call; use continue for new instructions."),
-      readOnly: z.boolean().optional(),
-      workItemId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/).optional(),
-      workRunId: z.string().optional().describe("Top-level run returned by work_task begin. Required on continue; bind all related Codex turns to this run for accurate completion receipts."),
-      contextKey: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/).optional()
+      read_only: z.boolean().optional(),
+      work_item_id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/).optional(),
+      work_run_id: z.string().optional().describe("Top-level run returned by work_task begin. Required on continue; bind all related Codex turns to this run for accurate completion receipts."),
+      context_key: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/).optional()
         .describe("Stable problem-domain/role identity across related tasks, not a phase name or source SHA. Requires workItemId; a matching terminal thread (including error/stopped) is resumed with normal provider checks. Different contexts remain separate."),
-      freshContext: z.boolean().optional().describe("Use a separate context for unrelated work or independent acceptance review; do not prewarm idle workers."),
-      requestKey: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/).optional().describe("Idempotency identity for one continuation, distinct from the session/domain identity."),
+      fresh_context: z.boolean().optional().describe("Use a separate context for unrelated work or independent acceptance review; do not prewarm idle workers."),
+      request_key: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/).optional().describe("Idempotency identity for one continuation, distinct from the session/domain identity."),
       context: z.object({ summary: z.string().max(12_000), files: z.array(z.object({
         path: z.string().min(1).max(1024), sha256: z.string().regex(/^[0-9a-f]{64}$/),
       }).strict()).max(24) }).strict().optional().describe("Host-prepared facts and versioned files from workspace_context. References are checked before invocation, and again after shared-read analysis. No automatic full-file copy."),
       resources: z.array(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/)).max(16).optional(),
       model: z.string().optional(),
       effort: z.string().optional().describe("Requested reasoning effort. Configured model-family reasoning limits may lower it; returned session/receipt effort is the effective value."),
-      waitMs: z.number().int().min(0).max(25_000).optional().describe("Bounded longpoll, default 20000 ms. Reuse revision; usage and elapsed time alone do not wake it."),
-      knownRevision: z.string().optional().describe("Task/progress change token, independent of cumulative usage. Observe never accepts or finishes a work run."),
-      includeResponse: z.boolean().optional().describe("Explicitly retrieve terminal response and completion receipt, repeatable after disconnect even with the same revision."),
+      wait_ms: z.number().int().min(0).max(25_000).optional().describe("Bounded longpoll, default 20000 ms. Reuse revision; usage and elapsed time alone do not wake it."),
+      known_revision: z.string().optional().describe("Task/progress change token, independent of cumulative usage. Observe never accepts or finishes a work run."),
+      include_response: z.boolean().optional().describe("Explicitly retrieve terminal response and completion receipt, repeatable after disconnect even with the same revision."),
     },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-  }, async (input, extra) => {
+  }, async ({ workspace_id, response_offset, response_execution_id, agent_id, task_key, read_only,
+    work_item_id, work_run_id, context_key, fresh_context, request_key, wait_ms, known_revision,
+    include_response, ...rest }, extra) => {
+    const input = {
+      ...rest,
+      workspaceId: workspace_id,
+      responseOffset: response_offset,
+      responseExecutionId: response_execution_id,
+      agentId: agent_id,
+      taskKey: task_key,
+      readOnly: read_only,
+      workItemId: work_item_id,
+      workRunId: work_run_id,
+      contextKey: context_key,
+      freshContext: fresh_context,
+      requestKey: request_key,
+      waitMs: wait_ms,
+      knownRevision: known_revision,
+      includeResponse: include_response,
+    };
     const workspace = await workspaces.getWorkspace(input.workspaceId);
     const scope = { workspaceId: workspace.id, workspaceRoot: workspace.root };
     const reply = (value: any, isError = false) => ({ ...jsonReply(value), isError });

@@ -44,7 +44,7 @@ test("advertised skill tilde/absolute read and capture agree; unadvertised and s
     return readFileTool({ path: resolved.absolutePath }, { root: project, cwd: project, readRoots: resolved.readRoots });
   };
   const capture = async (path: string) => client.callTool({ name: "workspace_context", arguments: {
-    workspaceId: opened.workspace.id, action: "capture", files: [{ path }],
+    workspace_id: opened.workspace.id, action: "capture", files: [{ path }],
   } });
   const tilde = "~/.codex/skills/advertised/SKILL.md"; const absolute = join(skill, "SKILL.md");
   assert.deepEqual(await read(tilde), await read(absolute));

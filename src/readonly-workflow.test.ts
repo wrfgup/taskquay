@@ -134,22 +134,22 @@ test("MCP queue conflict and busy continue expose scoped next actions with zero 
   const client = new Client({ name: "fixture", version: "1" });
   const [a, b] = InMemoryTransport.createLinkedPair(); await server.connect(a); await client.connect(b);
   const call = async (args: Record<string, unknown>) => {
-    const result = await client.callTool({ name: "agent_task", arguments: { workspaceId: f.scope.workspaceId, ...args } });
+    const result = await client.callTool({ name: "agent_task", arguments: { workspace_id: f.scope.workspaceId, ...args } });
     return { ...JSON.parse((result.content as Array<{ text: string }>)[0]!.text), isError: result.isError };
   };
   try {
-  const started = await call({ action: "start", target: "codex", prompt: "fixture", taskKey: "fixture", workItemId: "fixture" });
+  const started = await call({ action: "start", target: "codex", prompt: "fixture", task_key: "fixture", work_item_id: "fixture" });
   assert.equal(started.status, "queued"); assert.equal(started.nextAction.action, "observe");
-  const queued = await call({ action: "observe", agentId: started.id, waitMs: 0 });
+  const queued = await call({ action: "observe", agent_id: started.id, wait_ms: 0 });
   assert.equal(queued.progress.waitingReason, "execution_admission");
   assert.equal(queued.admission.owners[0].claimId, claim.id); assert.equal(queued.admission.owners[0].scope, "checkout");
-  const busy = await call({ action: "continue", agentId: started.id, prompt: "next", requestKey: "next", workRunId: started.workRunId });
+  const busy = await call({ action: "continue", agent_id: started.id, prompt: "next", request_key: "next", work_run_id: started.workRunId });
   assert.equal(busy.isError, true); assert.equal(busy.providerInvoked, false); assert.equal(busy.requestAccepted, false);
   assert.equal(busy.nextAction.action, "observe"); assert.equal(busy.owner.workspaceId, f.scope.workspaceId);
   for (const action of ["observe", "usage"])
-    assert.equal((await call({ action, agentId: started.id, workspaceId: "other-workspace", waitMs: 0, includeResponse: true })).isError, true);
+    assert.equal((await call({ action, agent_id: started.id, workspace_id: "other-workspace", wait_ms: 0, include_response: true })).isError, true);
   await until(() => f.store.getById(started.id)!.status === "error");
-  const terminal = await call({ action: "observe", agentId: started.id, waitMs: 0 });
+  const terminal = await call({ action: "observe", agent_id: started.id, wait_ms: 0 });
   assert.equal(terminal.nextAction.action, "claims"); assert.equal(terminal.error.code, "AGENT_CONFLICT");
   assert.equal(f.calls.length, 0);
   const ledger = new WorkLedger(f.stateDir);

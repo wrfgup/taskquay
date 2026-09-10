@@ -12,7 +12,7 @@ import {
 
 export function resultOutputSchema(extra: z.ZodRawShape = {}): z.ZodRawShape {
   return {
-    operationId: z.string().optional(), workRunId: z.string().optional(), hostAcknowledgment: z.literal("unknown").optional(),
+    operation_id: z.string().optional(), work_run_id: z.string().optional(), host_acknowledgment: z.literal("unknown").optional(),
     result: z
       .string()
       .describe(

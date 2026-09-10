@@ -50,40 +50,40 @@ test("native MCP control observes an occupied checkout without shell claims and 
   t.after(async () => { claim.release(); await client.close(); await server.close(); processSessions.shutdown(); store.close(); rmSync(root, { recursive: true, force: true }); });
   await server.connect(serverTransport); await client.connect(clientTransport);
   const call = async (args: Record<string, unknown>) => {
-    const response = await client.callTool({ name: "agent_task", arguments: { workspaceId: "workspace-1", ...args } });
+    const response = await client.callTool({ name: "agent_task", arguments: { workspace_id: "workspace-1", ...args } });
     const text = (response.content as Array<{ type: string; text: string }>)[0]!.text;
     return { ...JSON.parse(text), isError: response.isError } as Record<string, unknown>;
   };
   const absent = await call({ action: "start", target: "codex", prompt: "work" });
   assert.equal(absent.isError, true); assert.equal(starts.length, 0);
   assert.deepEqual(absent.missingFields, ["taskKey", "workItemId"]);
-  assert.equal((await call({ action: "start", target: "codex", prompt: "work", taskKey: "task-1" })).isError, true);
+  assert.equal((await call({ action: "start", target: "codex", prompt: "work", task_key: "task-1" })).isError, true);
   assert.equal(starts.length, 0, "Native work must identify a work item for the context budget");
-  await call({ action: "start", target: "codex", prompt: "work", taskKey: "task-1", workItemId: "work-1", readOnly: true });
+  await call({ action: "start", target: "codex", prompt: "work", task_key: "task-1", work_item_id: "work-1", read_only: true });
   assert.equal(starts[0]?.taskKey, "task-1"); assert.equal(starts[0]?.writeMode, "read_only");
-  const initial = await call({ action: "observe", agentId: record.id, waitMs: 0 });
+  const initial = await call({ action: "observe", agent_id: record.id, wait_ms: 0 });
   assert.equal(initial.status, "running");
-  const unchanged = await call({ action: "observe", agentId: record.id, waitMs: 0, knownRevision: initial.revision });
+  const unchanged = await call({ action: "observe", agent_id: record.id, wait_ms: 0, known_revision: initial.revision });
   assert.equal(unchanged.unchanged, true);
   record = { ...record, status: "idle", latestResponse: "completed evidence" };
-  const brief = await call({ action: "observe", agentId: record.id, waitMs: 0, knownRevision: initial.revision });
+  const brief = await call({ action: "observe", agent_id: record.id, wait_ms: 0, known_revision: initial.revision });
   assert.equal(brief.responseAvailable, true); assert.equal(brief.response, undefined);
-  const expanded = await call({ action: "observe", agentId: record.id, includeResponse: true, waitMs: 0 });
+  const expanded = await call({ action: "observe", agent_id: record.id, include_response: true, wait_ms: 0 });
   assert.equal(expanded.response, "completed evidence");
-  const recovered = await call({ action: "observe", agentId: record.id, includeResponse: true, waitMs: 0,
-    knownRevision: brief.revision });
+  const recovered = await call({ action: "observe", agent_id: record.id, include_response: true, wait_ms: 0,
+    known_revision: brief.revision });
   assert.equal(recovered.response, "completed evidence", "A saved revision must not hide explicitly requested terminal output after reconnect");
-  const replayed = await call({ action: "observe", agentId: record.id, includeResponse: true, waitMs: 0,
-    knownRevision: recovered.revision });
+  const replayed = await call({ action: "observe", agent_id: record.id, include_response: true, wait_ms: 0,
+    known_revision: recovered.revision });
   assert.equal(replayed.response, "completed evidence");
   assert.equal(starts.length, 1, "Recovery never launches a model");
   const claims = await call({ action: "claims" });
   assert.equal((claims.claims as unknown[]).length, 1);
-  const usage = await call({ action: "usage", agentId: record.id });
+  const usage = await call({ action: "usage", agent_id: record.id });
   assert.equal(usage.status, "unknown");
   scoped = false;
-  assert.equal((await call({ action: "usage", agentId: record.id })).isError, true);
-  assert.equal((await call({ action: "observe", agentId: record.id, includeResponse: true, waitMs: 0 })).isError, true);
+  assert.equal((await call({ action: "usage", agent_id: record.id })).isError, true);
+  assert.equal((await call({ action: "observe", agent_id: record.id, include_response: true, wait_ms: 0 })).isError, true);
 });
 
 test("trace mechanism replay: 120 cumulative usage updates do not change task/progress revisions or wake bounded longpoll", async (t) => {
@@ -113,7 +113,7 @@ test("trace mechanism replay: 120 cumulative usage updates do not change task/pr
   const [a, b] = InMemoryTransport.createLinkedPair(); await server.connect(a); await client.connect(b);
   t.after(async () => { await client.close(); await server.close(); processSessions.shutdown(); ledger.close(); store.close(); rmSync(root, { recursive: true, force: true }); });
   const observe = async (extra: Record<string, unknown> = {}) => {
-    const result = await client.callTool({ name: "agent_task", arguments: { workspaceId: "ws", action: "observe", agentId: record.id, waitMs: 0, ...extra } });
+    const result = await client.callTool({ name: "agent_task", arguments: { workspace_id: "ws", action: "observe", agent_id: record.id, wait_ms: 0, ...extra } });
     return JSON.parse((result.content as Array<{ text: string }>)[0]!.text);
   };
   const first = await observe(); const oldRevisions = new Set<string>();
@@ -125,7 +125,7 @@ test("trace mechanism replay: 120 cumulative usage updates do not change task/pr
   };
   for (let n = 1; n <= trace.syntheticUsageUpdates; n++) {
     usage(n);
-    const next = await observe({ knownRevision: first.revision });
+    const next = await observe({ known_revision: first.revision });
     assert.equal(next.revision, first.revision); assert.equal(next.unchanged, true);
     assert.equal(next.completionSnapshot.revision, first.completionSnapshot.revision);
     assert.equal(next.completionReceipt, undefined);
@@ -135,13 +135,13 @@ test("trace mechanism replay: 120 cumulative usage updates do not change task/pr
   const beforeGets = gets; const started = performance.now();
   const updating = setInterval(() => usage(121), 10);
   let waited;
-  try { waited = await observe({ knownRevision: first.revision, waitMs: 120 }); } finally { clearInterval(updating); }
+  try { waited = await observe({ known_revision: first.revision, wait_ms: 120 }); } finally { clearInterval(updating); }
   const waitedMs = performance.now() - started;
   const longpollReads = gets - beforeGets;
   assert(waitedMs >= 100 && waitedMs < 2000, `bounded wait: ${waitedMs}`);
   assert(gets - beforeGets <= 3); assert.equal(waited.unchanged, true);
   store.recordActivityResult(record.id, { phase: "tool", toolCategory: "build" });
-  const building = await observe({ knownRevision: first.revision, waitMs: 1000 });
+  const building = await observe({ known_revision: first.revision, wait_ms: 1000 });
   assert.equal(building.taskRevision, first.taskRevision); assert.notEqual(building.progressRevision, first.progressRevision);
   assert.equal(building.progress.toolCategory, "build");
   assert(JSON.stringify(building.progress).length < 1024);
@@ -159,7 +159,7 @@ test("trace mechanism replay: 120 cumulative usage updates do not change task/pr
   const [reconnectServer, reconnectClient] = InMemoryTransport.createLinkedPair();
   await server.connect(reconnectServer); await client.connect(reconnectClient);
   for (let n = 0; n < 2; n++) {
-    const recovered = await observe({ knownRevision: brief.revision, includeResponse: true });
+    const recovered = await observe({ known_revision: brief.revision, include_response: true });
     assert.equal(recovered.response, "synthetic-secret-terminal");
     assert.deepEqual(recovered.completionSnapshot, brief.completionSnapshot);
     assert.equal(recovered.completionReceipt.codexUsage.totalTokens, trace.delta.totalTokens);
