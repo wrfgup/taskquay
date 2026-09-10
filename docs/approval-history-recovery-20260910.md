@@ -45,3 +45,13 @@ git diff --check
 ```
 
 夹具覆盖原生 paginated resume 成功（含旧版本字符串）、明确不支持时默认拒绝与显式 handoff、未知版本、同 thread identity、quota 不 fallback、重复 `requestKey` 不重复 turn、旧成功回执保留、跨 scope、会话预算和本地 approval policy。源码构建成功不表示 live server 已加载；本提交不 push、不重启、不修改线上配置，因此 handoff 当前未启用。
+
+## 重新连接后的实际状态（2026-09-10）
+
+前节记载的是实现阶段，不代表后续全部状态。13:38 UTC 后主控已核对：历史修复 `e06e3b8` 与命令 review 配置 `6f34228` 均已进入当前 `main` 和 `origin/main`；用户配置 `tools.dangerouslySkipCommandReview=true`，`historyHandoff` 仍未启用。宿主安全检查仍可能独立拒绝请求，不能把本地配置解释为宿主安全检查被关闭。
+
+两条上午会话的实际剩余阻断为系统重启后遗留写锁。按操作系统启动时间与精确失败会话/最新执行证据恢复两把锁后，原 yaxian agent `agt_c8323c8a` 已通过原生 `continue` 成功继续：仍使用 provider thread `01a0898d-e297-7983-b699-666775889580`，请求 `gpt-5.6-sol / medium`，新执行 `exec_d1214eb201714a7abcf3cc335d8adf5b`。这次未启用 handoff、未新建线程、未报分页不支持；接续执行不等于 Test 发布已验收。维护实现和 12 项测试、审计见[前一次系统启动任务锁恢复](previous-boot-claim-recovery-20260910.md)，修复 `7fa4827` 已 push 并以 `ls-remote` 核实。
+
+主控独立重跑历史相关 TypeScript 套件与类型检查的组合调用被宿主拒绝，没有执行；未改包装或委托代理绕过。已存在的 310 项测试回执（303 通过、7 平台跳过、0 失败）属于源码 `579290c`，与后续模型面 snake_case 合并存在差异，因此不能冒称是当前所有源码的全量回归。12 项前启动期恢复测试和同原线程接续是本轮独立取得的新证据。
+
+用户已重启的 MCP 服务持续处理当前调用；正在运行的 Test 构建不得为再次重启而中断。新恢复器为显式独立维护脚本，不要求替换 live dist。宿主缓存 camelCase 参数而当前服务要求 snake_case 的契约差异已通过实际字段识别，不把参数校验错误误称为账号授权失败或工具审批。
