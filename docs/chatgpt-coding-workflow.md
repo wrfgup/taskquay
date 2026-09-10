@@ -162,7 +162,8 @@ and concurrency policy. Outside an MCP host, the same skill teaches the direct
 ## Tool Names
 
 Use `work_task begin` before the top-level task, including work performed entirely
-by direct host tools. Propagate its workRunId to reads, mutations, commands and
+by direct host tools. Keep the returned `workRunId`, then propagate it as
+`work_run_id` to reads, mutations, commands and
 agent tasks. `work_task finish` requires terminal child work and explicit acceptance;
 use its Codex token total and completeness in the final answer. The independent
 `/console/` displays the same receipt. Historical or external Codex usage is not
@@ -201,15 +202,30 @@ DevSpace uses the Codex-style surface by default. It exposes:
 - `show_changes`
 
 In this mode, `write`, `edit`, and `bash` are not registered. `exec_command`
-returns a process session ID when a command is still
+returns `session_id` when a command is still
 running after its yield window. Use `write_stdin` to poll it, send input, resize
 a PTY, or send Ctrl-C. Set `tty: true` only for commands that need a terminal.
+Both process tools cap `yield_time_ms` at 12000 milliseconds; longer work must be
+continued through `write_stdin` instead of one unbounded MCP request.
 
 Set `tools.mode` to `claude` in `~/.devspace/config.jsonc` to expose `write`,
 `edit`, and `bash` instead of the Codex mutation and command tools. Dedicated
 MCP tools for `grep`, `glob`, and `ls` are not registered in either mode. Prefer
 workspace_context for bounded listing/capture/search. Specialized shell commands
 remain available, but arbitrary shell effects are treated as exclusive.
+
+All advertised MCP input and output-schema property names use recursive
+`snake_case`. This includes nested edit fields such as `old_text`/`new_text` and
+process fields such as `working_directory`, `max_output_tokens`, and `exit_code`.
+Configuration keys remain camelCase because `~/.devspace/config.jsonc` is a
+separate persisted contract. After a server upgrade, refresh the host's MCP tool
+metadata before relying on renamed fields.
+
+Shell tools retain destructive annotations by default. A trusted machine owner
+may opt in with `tools.dangerouslySkipCommandReview: true`; this changes command
+tool annotations only and does not bypass authentication, path boundaries,
+execution claims, or mandatory host controls. Restart the server and refresh MCP
+metadata after changing it.
 
 ## Show Changes
 

@@ -17,7 +17,7 @@ not imply that the summary or necessary source reads consume zero worker tokens.
 Example native sequence (schema contracts, not a requirement to invoke a worker):
 
 ```json
-{"action":"capture","workspaceId":"<workspace>","files":[{"path":"src/example.ts","startLine":1,"maxLines":80}]}
+{"action":"capture","workspace_id":"<workspace>","files":[{"path":"src/example.ts","start_line":1,"max_lines":80}]}
 ```
 
 This is a `workspace_context` request. The host can answer directly from the result.
@@ -25,9 +25,9 @@ When further work is warranted, `agent_task` accepts:
 
 ```json
 {
-  "action":"start","workspaceId":"<workspace>","target":"codex",
-  "taskKey":"review-1","workItemId":"example-fix","contextKey":"example/reviewer",
-  "readOnly":true,"prompt":"Review the specified transition and adjacent tests.",
+  "action":"start","workspace_id":"<workspace>","target":"codex",
+  "task_key":"review-1","work_item_id":"example-fix","context_key":"example/reviewer",
+  "read_only":true,"prompt":"Review the specified transition and adjacent tests.",
   "context":{"summary":"Host-verified facts and remaining questions.","files":[{"path":"src/example.ts","sha256":"<actual capture hash>"}]}
 }
 ```
@@ -64,18 +64,18 @@ These are thread-local settings, not changes to the user's global configuration.
 
 ## Context affinity is not idempotency
 
-`workItemId` identifies one coherent objective and its acceptance cycle. Native starts require
-it and a stable initial `taskKey`. A new task under the same explicit `contextKey` resumes an
+`work_item_id` identifies one coherent objective and its acceptance cycle. Native MCP starts require
+it and a stable initial `task_key`. A new task under the same explicit `context_key` resumes an
 idle related provider thread only when workspace/scope, work item, target, requested effective
 model/effort, permissions and profile match. The source commit is deliberately not the affinity
 key: provide the changed evidence and continue instead of creating a new thread per commit.
 
 An occupied matching session is not silently cloned. Observe it before continuing. A separate
-independent acceptance context uses `freshContext`. Default new-session budget per work item
+independent acceptance context uses `fresh_context`. Default new-session budget per work item
 is 3 (configurable), distinct from active concurrency. Do not vary the work item merely to evade
 the budget. A request key replays one exact request; it is not a topic or session name.
 
-Native continuation requires `requestKey`. Replaying that key does not invoke a model twice;
+Native MCP continuation requires `request_key`. Replaying that key does not invoke a model twice;
 different instructions with the same key are rejected. Legacy CLI continuation without a key
 still gets atomic busy-session reservation, but cannot deduplicate a network retry. An admission
 failure persists a terminal result rather than leaving the session permanently `starting`.

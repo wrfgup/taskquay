@@ -33,15 +33,15 @@ http://127.0.0.1:7676/console/
 新增原生 `work_task`。主控直接阅读前开始工作，即使无需 Codex 也登记：
 
 ```json
-{"action":"begin","workspaceId":"<workspace>","workItemId":"console-feature","runKey":"run-1","title":"实现项目任务台","hostModelLabel":"GPT-6 Pro"}
+{"action":"begin","workspace_id":"<workspace>","work_item_id":"console-feature","run_key":"run-1","title":"实现项目任务台","host_model_label":"GPT-6 Pro"}
 ```
 
-保留返回的 workRunId，传入 read、workspace_context、apply_patch、exec_command（Claude surface 对应 write/edit/bash）及 agent_task。确定性工具登记种类和状态，不保存原始命令、源码或凭据。长命令首次 yield 不等于完成，必须等待进程退出。
+保留返回的 `workRunId`，在 read、workspace_context、apply_patch、exec_command（Claude surface 对应 write/edit/bash）及 agent_task 的 MCP 入参中作为 `work_run_id` 传递。确定性工具登记种类和状态，不保存原始命令、源码或凭据。长命令首次 yield 不等于完成；单次 `yield_time_ms` 最大 12000，继续执行必须使用返回的 `session_id`。
 
 子代理 observe 自动带当次工作回执。主控最终使用 finish 提交验收：
 
 ```json
-{"action":"finish","workspaceId":"<workspace>","workRunId":"<returned run>","status":"completed","acceptance":"passed","summary":"修改与回归验证完成","evidence":[{"label":"定向测试","reference":"<actual evidence reference>","outcome":"passed"}]}
+{"action":"finish","workspace_id":"<workspace>","work_run_id":"<returned run>","status":"completed","acceptance":"passed","summary":"修改与回归验证完成","evidence":[{"label":"定向测试","reference":"<actual evidence reference>","outcome":"passed"}]}
 ```
 
 系统检查子执行、长命令和占用是否已结束，验收通过须有明确证据且不能混有失败证据。证据由主控提交，系统不把任意字符串引用自动认证为测试真的执行；实际运行与检查仍由主控负责。模型 final response 不自动成为验收通过。重复 finish 不能静默改写已关闭结果。

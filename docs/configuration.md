@@ -178,6 +178,13 @@ operating-system controls, provider controls, or a remote host's independent
 mandatory confirmation policy. Restart DevSpace and refresh the MCP connection
 metadata after changing it.
 
+Configuration keys in this file remain camelCase. Model-facing MCP schemas use
+recursive `snake_case`, including nested properties: for example `workspace_id`,
+`work_run_id`, `request_key`, `old_text`, and `yield_time_ms`. Refresh the host's
+tool metadata after upgrades so it does not keep sending an older cached schema.
+`exec_command` and `write_stdin` accept at most 12000 milliseconds per
+`yield_time_ms`; continue longer processes with the returned `session_id`.
+
 The dedicated tools `grep`, `glob`, and `ls` are not exposed. `workspace_context`
 provides nonrecursive listing and literal search/capture over selected files without
 a shell or model. Use the shell for more specialized operations; unknown shell effects
@@ -245,7 +252,7 @@ subagents for routine work.
 Codex `historyHandoff` is owner-controlled and defaults to disabled. The only
 enabled value is `verified-unsupported`: after an identity-matched, terminal,
 same-workspace paginated thread is explicitly rejected by native `thread/resume`,
-a continuation with an explicit new `requestKey` may create a traced empty thread.
+a continuation with an explicit new MCP `request_key` may create a traced empty thread.
 It does not copy provider history or replay an earlier response. Quota,
 authentication, transport/unknown errors, active turns, and scope mismatches never
 fall back. See [approval and history recovery](approval-history-recovery-20260910.md).
@@ -287,7 +294,8 @@ HttpOnly/SameSite session cookie, strict Origin/CSRF checks and project scopes.
 Remote access requires explicit opt-in and the configured HTTPS publicBaseUrl.
 
 Both surfaces expose `work_task`. Begin a run before host reads or delegation,
-propagate workRunId, and finish after child operations stop with explicit acceptance
+keep its returned `workRunId`, propagate it as the MCP input `work_run_id`, and
+finish after child operations stop with explicit acceptance
 evidence. Receipts and the dashboard use the same complete mapped-execution query,
 not a last-20 snapshot window. Unknown history is not zero and not assigned to a
 later task. See [project-console.md](project-console.md) for protocol 6, metadata
@@ -301,7 +309,7 @@ Defaults are **two active managed agents globally**, at most **two verified read
 
 `subagents.sharedResources` optionally declares up to 16 exclusive resources for non-analysis turns. Pure analysis must not use build outputs/devices; explicit task `resources` are always exclusive. Managed `exec_command` accepts matching resources across worktrees. Every participant must use the same state directory and resource keys. This is cooperative admission, **not an OS sandbox**; external editors, terminals and independently daemonized children are outside its guarantee. Existing claims migrate as exclusive. Queued waiters expire or can be cancelled; active claims are never stolen by elapsed time or a missing PID.
 
-Excess work waits locally without starting a provider; a queued writer blocks later readers of the same source. Each agent/thread has only one active or queued turn. Native start requires `taskKey` and `workItemId`; optional `contextKey` reuses an idle related session under matching model/effort/permissions/profile, while `freshContext` retains independent-review capability. Request replay and session affinity are distinct. Native continue requires `requestKey`; identical retries do not perform paid work again and changed payloads under the same key are rejected. The CLI adds `--work-item`, `--context-key`, `--fresh-context` and `--request-key`; its old no-key syntax remains compatible but cannot deduplicate a client retry. Native control avoids a parent shell holding the very source claim it wants to delegate.
+Excess work waits locally without starting a provider; a queued writer blocks later readers of the same source. Each agent/thread has only one active or queued turn. Native MCP start requires `task_key` and `work_item_id`; optional `context_key` reuses an idle related session under matching model/effort/permissions/profile, while `fresh_context` retains independent-review capability. Request replay and session affinity are distinct. Native MCP continue requires `request_key`; identical retries do not perform paid work again and changed payloads under the same key are rejected. The CLI adds `--work-item`, `--context-key`, `--fresh-context` and `--request-key`; its old no-key syntax remains compatible but cannot deduplicate a client retry. Native control avoids a parent shell holding the very source claim it wants to delegate.
 
 `agent_task` provides start/continue/observe/list/claims/usage/cancelQueued. Observe locally waits up to 25 seconds with revision deduplication; full response expansion is explicit. Usage retains provider snapshots and unknowns, not a fabricated invoice. Queued tasks can be cancelled before invocation. Running-task cancellation, orphan reconciliation, automatic immutable snapshots, fork and cache-affinity experiments are not implemented by this phase.
 

@@ -153,15 +153,15 @@ node bin/devspace.js serve
 
 > 使用 TaskQuay 处理这个项目。先读取相关实现、确认目标与限制。主控能直接完成的调查不要重复委派；确实需要 Codex 时复用相关会话。对同一源码的写入和共享编译资源保持互斥。逐步实施、运行检查并审查最终 diff，返回结果、验收范围和本次 Codex Token 回执。部署、公开发布和破坏性操作需要另行确认。
 
-主控用 `work_task` 建立工作，持续传递 `workRunId`；子操作结束、实际证据检查完毕后再结算。你不用每次手工挑一个新 Codex 窗口，更不必把每条构建日志来回复制。平台仍可能要求确认高风险工具动作；本项目不会绕过这些控制。
+主控用 `work_task` 建立工作，保存返回的 `workRunId`，并在后续 MCP 调用中通过 `work_run_id` 传递；子操作结束、实际证据检查完毕后再结算。当前工具 schema 的属性名统一使用递归 `snake_case`，例如 `workspace_id`、`request_key`、`yield_time_ms` 和 `session_id`。升级服务后应刷新连接元数据，旧缓存 schema 不会自动获得新字段名。
 
 ### 执行观察、断线取回与排队
 
-`agent_task observe` 返回任务与进展 revision；主控携带上次的 `revision` 使用有界 longpoll（默认 20 秒，最大 25 秒）。累计 Token、更新时间和经过时长本身不触发提前返回。日常观察不附整份用量回执；用量查询仍走 `usage`，终态用 `includeResponse: true` 显式取回结果与完成回执。同一 revision 可反复取回，连接中断不会消费结果。
+`agent_task observe` 返回任务与进展 revision；主控携带上次的 `revision`，通过 `known_revision` 和 `wait_ms` 使用有界 longpoll（默认 20 秒，最大 25 秒）。累计 Token、更新时间和经过时长本身不触发提前返回。日常观察不附整份用量回执；用量查询仍走 `usage`，终态用 `include_response: true` 显式取回结果与完成回执。同一 revision 可反复取回，连接中断不会消费结果。
 
 `progress` 仅包含固定阶段/工具类别、最后活动时间、时长和等待原因；构建/测试类别是 provider 事件提示，静默不等于卡死，未知数据保留未知。默认不输出命令、stdout 或模型思维。`nextAction` 指示继续观察、检查 claim 或由主控审核结果；任务完成不会自动通过验收，主控仍须显式结算 `work_task`。
 
-队列和 busy continue 不启动额外推理、不抢写锁、不自动重放写入。收到冲突先按 `nextAction` 核对 owner/claim；相关续接在终态后使用新的 `requestKey`。广告中的 `~/…/SKILL.md` 与绝对路径可用于 `read` 和 `workspace_context capture`，仅允许已加载技能及其目录资源，并检查真实路径越界。外部技能 capture 作为阅读证据返回，不混入仅接受工作区源码的 delegation refs。
+队列和 busy continue 不启动额外推理、不抢写锁、不自动重放写入。收到冲突先按返回的 `nextAction` 核对 owner/claim；相关续接在终态后使用新的 `request_key`。广告中的 `~/…/SKILL.md` 与绝对路径可用于 `read` 和 `workspace_context capture`，仅允许已加载技能及其目录资源，并检查真实路径越界。外部技能 capture 作为阅读证据返回，不混入仅接受工作区源码的 delegation refs。
 
 这些改进需主控在现有发布任务停稳后安全启用新的 server 与 agentd；源码修改或 staging 构建成功不代表线上已更新。实测数据、缺失证据和运行路径见[执行可靠性 trace 复盘](docs/execution-reliability-trace.zh-CN.md)。
 
@@ -185,6 +185,17 @@ node bin/devspace.js serve
 当前主要在 Windows 上开发和本地验证；上游跨平台代码及 CI 矩阵不代表当前所有功能都在所有平台通过。自动不可变快照、任意节点 fork、保证缓存命中和完整自动中断恢复不属于已完成承诺。
 
 受管 Codex 的本地 `approvalPolicy` 固定为 `never`，表示 DevSpace 不弹出本地审批框；它不会关闭 ChatGPT／OpenAI 宿主、操作系统或 provider 的安全判断，也不会自动批准网络、提权或未知请求。提供端若意外发起交互式 approval，DevSpace 会明确拒绝为“不可交互且未批准”。默认 MCP shell annotations 仍标记为可能破坏；只有本机所有者显式启用 `tools.dangerouslySkipCommandReview` 时，才改为发布已预授权的非破坏性审查提示，宿主仍可覆盖。
+
+```jsonc
+{
+  "tools": {
+    "mode": "codex",
+    "dangerouslySkipCommandReview": false
+  }
+}
+```
+
+该开关默认关闭。改为 `true` 只影响 `exec_command`、`write_stdin`／`bash` 的 MCP annotations，不解析命令内容，也不关闭 OAuth、文件路径边界、执行锁或宿主强制确认。修改后必须重启服务并刷新 MCP 工具元数据。`exec_command` 和 `write_stdin` 的单次 `yield_time_ms` 最大为 12000；更长任务应使用返回的 `session_id` 继续轮询，不能靠超长请求占住一次 MCP 调用。
 
 分页历史恢复不再按 `0.153.4` 版本字符串直接判死：DevSpace 先只读核对 thread identity，再以真实 `thread/resume` 结果为准。原生恢复明确拒绝分页历史时，默认仍停止并保留原线程与成功回执；可选 handoff 是带父线程引用的新空线程，并非完整上下文恢复，不会自动重放旧发布指令。根因、开关、验收命令和当前未启用状态见[审批与历史恢复说明](docs/approval-history-recovery-20260910.md)。
 

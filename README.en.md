@@ -152,7 +152,9 @@ The console uses the owner secret with its own authenticated browser session and
 
 ## A workflow worth keeping
 
-Start one top-level work run with `work_task`, then propagate its `workRunId` through inspection, edits, commands, and agent calls. The host should first gather relevant context directly. Delegate only work that benefits from a worker, give it clear boundaries and versioned evidence, and continue the relevant session for follow-up changes and tests.
+Start one top-level work run with `work_task`, keep the returned `workRunId`, then pass it as `work_run_id` through inspection, edits, commands, and agent calls. Current MCP schemas use recursive `snake_case` property names such as `workspace_id`, `request_key`, `yield_time_ms`, and `session_id`. Refresh the connection metadata after upgrading the server; a host's cached schema does not learn renamed fields automatically.
+
+The host should first gather relevant context directly. Delegate only work that benefits from a worker, give it clear boundaries and versioned evidence, and continue the relevant session for follow-up changes and tests. `exec_command` and `write_stdin` cap one `yield_time_ms` window at 12000 milliseconds; continue longer work with the returned `session_id`.
 
 Use independent review when the risk justifies it. Finish only after child operations stop and actual acceptance evidence has been checked. A model's final message is not proof that a build, deployment, or GUI verification succeeded.
 
@@ -178,6 +180,8 @@ The runtime-pool callback fix and regression scope are documented in [usage acco
 ## Safety and current limits
 
 **Treat the connection as privileged local access.** File tools enforce workspace paths, but shell commands run with the local user's authority and are not a general filesystem sandbox. Source/resource claims coordinate participating processes; they cannot stop an unrelated editor or terminal.
+
+Shell tools are advertised as potentially destructive by default. A trusted machine owner may set `tools.dangerouslySkipCommandReview` to `true` in `~/.devspace/config.jsonc` to advertise `exec_command`, `write_stdin`, or `bash` as preauthorized. The setting defaults to `false`; it changes MCP annotations only. It does not inspect commands, disable OAuth, broaden workspace roots, remove execution claims, or override mandatory host/OS/provider controls. Restart DevSpace and refresh MCP metadata after changing it.
 
 Read-only analysis must not be confused with building, installing, writing to databases, operating a device, or publishing. Those operations need appropriate execution permissions and resource ownership. Interrupted claims require reconciliation; chat archival does not cancel processes.
 
