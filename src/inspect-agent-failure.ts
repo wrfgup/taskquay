@@ -1,6 +1,7 @@
 /** Inspect only a scoped managed thread's terminal errors; never print conversation items. */
 import { loadConfig } from "./config.js";
 import { LocalAgentClient } from "./local-agent-client.js";
+import { localAgentProviderConfigRevision } from "./local-agent-config.js";
 import { CodexAppServerRuntime, codexCommandEnvironment, resolveCodexCommand } from "./local-agent-codex.js";
 import { summarizeCodexFailure } from "./codex-failure-summary.js";
 import { assertAllowedPath } from "./roots.js";
@@ -11,7 +12,8 @@ if (!agentId?.match(/^agt_[a-z0-9]+$/) || !workspaceId?.match(/^ws_[a-z0-9]+$/) 
 }
 const config = loadConfig();
 const workspaceRoot = assertAllowedPath(root, config.allowedRoots);
-const client = new LocalAgentClient({ stateDir: config.stateDir, configDir: config.configDir });
+const client = new LocalAgentClient({ stateDir: config.stateDir, configDir: config.configDir,
+  configRevision: localAgentProviderConfigRevision(config.subagents) });
 const result = await client.get(agentId, { workspaceId, workspaceRoot });
 if (result.isErr()) {
   console.log(JSON.stringify({ agentId, available: false, code: result.error.code, providerInvoked: false }));

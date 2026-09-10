@@ -177,6 +177,7 @@ migrations.push({ version: 15, name: "agent-history-handoff-lineage", up(sqlite)
   addColumnIfMissing(sqlite, "local_agent_sessions", "recovery_type", "text");
   addColumnIfMissing(sqlite, "local_agent_sessions", "parent_provider_session_id", "text");
 } });
+migrations.push({ version: 16, name: "local-agent-turns", up: migrateLocalAgentTurns });
 
 function migrateWorkspaceState(sqlite: Database.Database): void {
   sqlite.exec(`
@@ -350,6 +351,30 @@ function migrateWorkspaceRecoveryState(sqlite: Database.Database): void {
   if (!workspaceStateExists) return;
 
   addColumnIfMissing(sqlite, "workspace_sessions", "recovery_kind", "text");
+}
+
+function migrateLocalAgentTurns(sqlite: Database.Database): void {
+  sqlite.exec(`
+    create table if not exists local_agent_turns (
+      id integer primary key autoincrement,
+      agent_id text not null,
+      prompt text not null,
+      status text not null,
+      response text,
+      error text,
+      error_code text,
+      error_retryable text,
+      created_at text not null,
+      completed_at text,
+      foreign key (agent_id) references local_agent_sessions(id) on delete cascade
+    );
+
+    create index if not exists local_agent_turns_agent_id_idx
+      on local_agent_turns(agent_id, id desc);
+
+    create index if not exists local_agent_turns_status_idx
+      on local_agent_turns(status);
+  `);
 }
 
 function addColumnIfMissing(

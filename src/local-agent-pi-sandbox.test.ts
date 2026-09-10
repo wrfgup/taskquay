@@ -12,6 +12,29 @@ import {
   releasePiSandboxSession,
 } from "./local-agent-pi-sandbox.js";
 
+{
+  const workspace = await mkdtemp(join(tmpdir(), "devspace-pi-env-test-"));
+  const modeRef = createPiSandboxModeRef("full_access");
+  const tools = new Map<string, { execute: (...args: any[]) => Promise<unknown> }>();
+  try {
+    createPiSandboxExtension(workspace, modeRef, {
+      ...process.env,
+      DEVSPACE_PI_ENV_TEST: "provider-env",
+    })({
+      registerTool: (tool: { name: string; execute: (...args: any[]) => Promise<unknown> }) =>
+        tools.set(tool.name, tool),
+    } as never);
+    const bash = tools.get("bash");
+    assert.ok(bash);
+    const result = await bash.execute("provider-env-test", { command: "printf %s \"$DEVSPACE_PI_ENV_TEST\"" }) as {
+      content: Array<{ type: string; text?: string }>;
+    };
+    assert.equal(result.content[0]?.text, "provider-env");
+  } finally {
+    await rm(workspace, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+}
+
 const dependencies = await SandboxManager.checkDependenciesAsync();
 if (process.env.DEVSPACE_REQUIRE_PI_SANDBOX === "1") {
   assert.equal(SandboxManager.isSupportedPlatform(), true, "Pi sandbox integration is required on this CI lane");
@@ -93,7 +116,7 @@ if (SandboxManager.isSupportedPlatform() && dependencies.errors.length === 0) {
     );
   } finally {
     await releasePiSandboxSession(session);
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 } else {
   console.log("Pi sandbox integration test skipped: sandbox-runtime dependencies are unavailable.");

@@ -32,6 +32,8 @@ The setup flow asks one question at a time.
 
 First choose where you will use DevSpace: ChatGPT, Coding Agents, or both.
 DevSpace uses that answer to skip setup that does not apply to you.
+This selects where you invoke DevSpace from. It does not control which agents
+DevSpace may run for delegated work.
 
 ### Project roots
 
@@ -57,11 +59,15 @@ commands use the current Git project, or the current directory outside a
 repository, with the authority of your local shell. MCP workspace operations
 remain limited to the roots configured for ChatGPT.
 
-### Coding Agents
+### Subagents
 
-Setup detects supported Coding Agents and asks which ones DevSpace may use.
+Setup detects supported agents and asks which ones DevSpace may use as
+subagents. ChatGPT or another coding agent can delegate work through DevSpace
+to the agents selected here.
 These choices are stored as provider objects under `subagents` in
 `~/.devspace/config.jsonc`.
+
+### Coding Agents
 
 If you selected Coding Agents, setup prints:
 
@@ -73,7 +79,7 @@ That printed command targets the upstream skill, not this fork's changed workflo
 For this fork, review the checked-in `skills/subagents/SKILL.md` and use an explicitly
 authorized installation method for your chosen agent; do not overwrite existing skills
 merely to follow an inherited example. The Skills CLI asks which installed Coding Agents should receive the skill.
-The skill uses `devspace agents targets`, `run`, `continue`, `show`, and `ls`.
+The skill uses `devspace agents targets`, `run`, `continue`, `show`, `wait`, and `ls`.
 These commands do not require `devspace serve`.
 
 This Coding Agent installation is separate from ChatGPT MCP usage. For MCP

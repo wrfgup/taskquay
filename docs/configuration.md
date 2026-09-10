@@ -202,6 +202,11 @@ Subagent providers are explicit. Omitted providers are disabled:
         "effort": "high",
         // Default is omitted/disabled. This is a new-thread handoff, not full history resume.
         "historyHandoff": "verified-unsupported",
+        "command": "/opt/devspace/bin/codex-wrapper",
+        "env": {
+          "CODEX_HOME": "/home/alice/.codex-work",
+          "OPENAI_BASE_URL": "https://api.example.com/v1",
+        },
       },
       {
         "id": "claude",
@@ -235,10 +240,30 @@ Profiles are loaded from `~/.devspace/agents/*.md` and project
 `.devspace/agents/*.md`. `devspace agents targets` prints the configured targets
 available in the current workspace.
 
-Provider executable discovery remains process-scoped. The supported overrides
-are `CODEX_COMMAND`, `CODEX_HOME`, `CLAUDE_COMMAND`, `CURSOR_COMMAND`,
-`COPILOT_COMMAND`, `GROK_COMMAND`, and `GROK_AGENT_PROFILE`. DevSpace does not
-persist provider credentials.
+`command` names one executable. DevSpace does not split shell arguments, so use
+a wrapper executable when startup needs fixed arguments. `env` maps environment
+variable names to literal string values and preserves empty strings. DevSpace
+does not expand `$NAME` references in these values.
+
+All subagent providers accept `env`. The daemon inherits its startup
+environment, then overlays the provider's `env` without mutating the daemon's
+process environment. OpenCode receives that environment on its managed server
+process; embedded Pi scopes it to its provider requests and command execution.
+
+Codex, Claude, Cursor, Copilot, and Grok also accept `command`. OpenCode and Pi
+do not expose a command override. For providers that support it, an explicit
+`command` wins over both the inherited command override and a command override
+placed in `env`.
+
+Existing process-level overrides remain supported: `CODEX_COMMAND`,
+`CODEX_HOME`, `CLAUDE_COMMAND`, `CURSOR_COMMAND`, `COPILOT_COMMAND`,
+`GROK_COMMAND`, and `GROK_AGENT_PROFILE`. Provider configuration takes
+precedence where the same value is set in both places.
+
+DevSpace writes `config.jsonc` with mode `0600`, but provider environment values
+are still plain text on disk. Keep the file out of version control. Leave
+credentials in the process environment if you do not want DevSpace to persist
+them.
 
 ### Project console and completion receipts
 
@@ -270,7 +295,13 @@ Excess work waits locally without starting a provider; a queued writer blocks la
 
 The Codex shared-analysis adapter uses thread-local read-only/network restrictions, disables configured MCP/apps/plugins and native nested fanout, and checks the returned sandbox before turn/start. Null optional tables and Unicode/plugin@market names are supported; ambiguous dotted/quoted identifiers fail closed until their installed-provider semantics are supported. Profile rules use a stable developer-instruction slot while preserving configured global instructions, rather than being appended to every new user prompt. Applicable AGENTS.md rules are not removed. No global Codex configuration is rewritten and cache hits are not guaranteed.
 
-Daemon protocol version **6** prevents an older daemon from ignoring queued states, context/request fields and work-run ownership. Interrupted tasks are marked for review, not automatically replayed; no prompt body is stored in waiter metadata. Use the controlled upgrade/reconnect flow after active work has settled; do not replace a running server's dist mid-task. See [console verification](project-console.md), [phase-two history](host-first-readonly-workflows.md), and [phase-one history](codex-efficiency-implementation.md).
+Daemon protocol version **7** prevents an older daemon from ignoring queued states,
+context/request fields, work-run ownership, persisted turns, event-driven waits,
+provider launch environments, or provider-config revisions. Interrupted tasks are
+marked for review, not automatically replayed; no prompt body is stored in waiter
+metadata. Use the controlled upgrade/reconnect flow after active work has settled;
+do not replace a running server's dist mid-task. See [console verification](project-console.md),
+[phase-two history](host-first-readonly-workflows.md), and [phase-one history](codex-efficiency-implementation.md).
 
 ## Native artifact download
 

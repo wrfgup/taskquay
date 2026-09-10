@@ -22,6 +22,7 @@ rl.createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(li
  if(m.method==='initialize')return send({id:m.id,result:{}});
  if(m.method==='account/read')return send({id:m.id,result:{account:{type:'chatgpt',email:'fixture@example.invalid'}}});
  if(m.method==='account/rateLimits/read')return send({id:m.id,error:{code:-32601,message:'Optional metadata unavailable in this lifecycle fixture'}});
+ if(m.method==='thread/resume'&&turns.length>=3)return send({id:m.id,error:{code:-32000,message:'PAGINATED_HISTORY_UNSUPPORTED: paginated history cannot be resumed'}});
  if(m.method==='thread/start'||m.method==='thread/resume')return send({id:m.id,result:{thread:{id:'thread',turns}}});
  if(m.method==='thread/read')return send({id:m.id,result:{thread:{id:'thread',turns,historyMode:turns.length>=3?'paginated':'inline'}}});
  if(m.method==='thread/name/set'||m.method==='thread/unsubscribe')return send({id:m.id,result:{}});

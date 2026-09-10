@@ -20,6 +20,8 @@ Use direct host tools first. `read` and `workspace_context` list/capture/literal
 
 When reasoning or implementation benefits from a worker, use native `agent_task` instead of a shell wrapper. A managed shell occupies the checkout, so a wrapper can itself block admission/observation. The direct-terminal CLI remains supported. Never bypass a conflict by changing directories, changing state directories or disabling a guard.
 
+When native `agent_task` is not exposed, run the DevSpace CLI through the shell or process tool from the project the subagent should use. Agent commands print compact XML fragments by default. Read that output directly; do not add `--json`.
+
 ## Concurrency and context policy
 
 Default to **one coherent primary session**, not a prestarted team. Continue it for related implementation, tests and fixes. Up to two pure-analysis workers may run when questions are genuinely independent. Merge high-overlap investigations rather than repeating their background. Use fresh context for an independent high-risk review when needed; do not sacrifice acceptance quality to maximize reuse.
@@ -39,20 +41,18 @@ Use `workspace_context` to capture explicitly selected file versions. The host p
 Discover usable targets instead of guessing names:
 
 ```bash
-devspace agents targets --json
+devspace agents targets
 ```
 
-Configured profiles include a description and may define provider, model, effort, and task instructions. Choose a matching profile when one fits. Use a provider target when no profile fits or a specific provider is needed.
-
-Usually rely on the target's configured model and effort. Pass `--model` or `--effort` only with a value supported by that provider. DevSpace passes these values through without translating them between providers.
+Each line is a `<provider name="..."/>` or `<profile name="..." provider="...">description</profile>` fragment. Pass the profile or provider `name` as `<profile-or-provider>`. Prefer a matching profile. Use a provider target when no profile fits or the task needs a specific provider. Keep the configured model and effort unless the task requires a supported override.
 
 ## Start work
 
-Give the subagent a self-contained brief. Include the objective, relevant paths, constraints, decisions it needs from the current conversation, and the expected result. The subagent receives the brief and its profile instructions, not the parent conversation.
+Give the subagent a self-contained brief with the objective, relevant paths, constraints, context it cannot infer, and the expected result. The subagent receives this brief and its profile instructions, not the parent conversation.
 
 ```bash
-devspace agents run <profile-or-provider> "<brief>" --json
-devspace agents run <profile-or-provider> --model <model> --effort <effort> "<brief>" --json
+devspace agents run <profile-or-provider> "<brief>"
+devspace agents run <profile-or-provider> --model <model> --effort <effort> "<brief>"
 ```
 
 For read-only project inspection, explanation, research, or review, pass `--read-only` to `run` and to each read-only `continue` call. This selects read-only execution and the provider's configured `readOnlyDefaults` for model and effort. Explicit `--model` and `--effort` take precedence. Direct file reads do not invoke a subagent model.
@@ -60,29 +60,40 @@ For read-only project inspection, explanation, research, or review, pass `--read
 Model and effort defaults are resolved for each turn. A `continue` without `--read-only` uses the normal target defaults, so a previous read-only turn does not carry its lighter effort into development. Repeat explicit model or effort options on follow-up turns when you want to keep those overrides.
 
 ```bash
-devspace agents run codex --task-key audit-1 --work-item review-records --context-key backend/records/reviewer --read-only "Review the specified record transition and its adjacent tests" --json
+devspace agents run codex --task-key audit-1 --work-item review-records --context-key backend/records/reviewer --read-only "Review the specified record transition and its adjacent tests"
 ```
 
-The result contains a DevSpace agent `id` and its current status. Execution continues independently, so retain the ID for later inspection or follow-up.
+The command returns an `<agent id="agt_..." status="running"/>` receipt. Keep the DevSpace agent ID for inspection, waiting, or follow-up.
 
-## Inspect and continue
+## Wait or inspect
+
+Use `wait` when work must finish before you proceed. One call can wait for several agents:
 
 ```bash
-devspace agents show <id> --json
-devspace agents continue <id> --request-key phase-2 "<follow-up brief>" --json
-devspace agents ls --json
+devspace agents wait <id>
+devspace agents wait <id> <id> <id>
+devspace agents wait <id> <id> --timeout 60
 ```
 
-- `show` waits briefly for active work, then returns the current status and any
-  available response or error.
-- `continue` gives the same subagent another turn with its existing provider
-  session and context.
-- `ls` returns sessions belonging to the current project.
+Without `--timeout`, the command waits until every named agent's current work finishes. A timeout returns one fragment per unique agent in first-seen order; unfinished work has `status="running" wait="timeout"`. Completed output is the element text. Failures include `code` and `retryable` attributes. The command does not stream partial results.
 
-Run `devspace agents show <id> --json` again later while the status is `queued` or `running`.
-`completed` includes the response. `failed` includes a structured error, and
-`stopped` is terminal without a successful response. Continue an agent when its
-existing context is useful; start another agent for unrelated work.
+Use `show` for an immediate snapshot. Do not poll it when `wait` can express the dependency.
+
+```bash
+devspace agents show <id>
+devspace agents ls
+```
+
+`ls` lists agents for the current project. Empty `targets` and `ls` results print nothing.
+
+## Continue related work
+
+Continue an agent when its existing provider context helps. Start another agent for unrelated work.
+
+```bash
+devspace agents continue <id> --request-key phase-2 "<follow-up brief>"
+devspace agents wait <id>
+```
 
 No context warm-up/keepalive model calls. Resume preserves history, not a guaranteed provider cache hit. Fork/cache-affinity experiments and automatic immutable snapshot creation are not implemented here. Use provider usage as evidence; do not claim token savings from fewer host messages or from an unmeasured cache-hit assumption.
 

@@ -14,6 +14,7 @@ import {
   createFindTool,
   createGrepTool,
   createLsTool,
+  createLocalBashOperations,
   createReadTool,
   createWriteTool,
   type BashOperations,
@@ -81,6 +82,7 @@ export function createPiSandboxModeRef(value: PiSandboxWriteMode): PiSandboxMode
 export function createPiSandboxExtension(
   workspace: string,
   modeRef: PiSandboxModeRef,
+  env: NodeJS.ProcessEnv = {},
 ): ExtensionFactory {
   return (pi) => {
     const localRead = createReadTool(workspace);
@@ -107,12 +109,36 @@ export function createPiSandboxExtension(
     const restrictedLs = createLsTool(workspace, { operations: createLsOperations(workspace) });
     pi.registerTool(dynamicTool(localLs, restrictedLs, modeRef));
 
-    const localBash = createBashTool(workspace);
+    const withProviderEnv = (operations: BashOperations): BashOperations => ({
+      exec: (command, cwd, options) => operations.exec(command, cwd, {
+        ...options,
+        env: mergeProviderEnv(options.env, env),
+      }),
+    });
+    const localBash = createBashTool(workspace, {
+      operations: withProviderEnv(createLocalBashOperations()),
+    });
     const restrictedBash = createBashTool(workspace, {
-      operations: createSandboxedBashOperations(),
+      operations: withProviderEnv(createSandboxedBashOperations()),
     });
     pi.registerTool(dynamicTool(localBash, restrictedBash, modeRef, true));
   };
+}
+
+function mergeProviderEnv(
+  base: NodeJS.ProcessEnv | undefined,
+  provider: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  const merged = { ...base, ...provider };
+  if (process.platform !== "win32") return merged;
+
+  const entries = new Set((merged.WSLENV ?? "").split(":").filter(Boolean));
+  const forwardedNames = new Set([...entries].map((entry) => entry.split("/")[0]));
+  for (const [name, value] of Object.entries(provider)) {
+    if (value !== undefined && !forwardedNames.has(name)) entries.add(name);
+  }
+  if (entries.size > 0) merged.WSLENV = [...entries].join(":");
+  return merged;
 }
 
 export function createPiSandboxConfig(workspace?: string): SandboxRuntimeConfig {

@@ -1,6 +1,7 @@
 /** Compare a scoped historical binding with the current provider identity; no inference or writes to bindings. */
 import { loadConfig } from "./config.js";
 import { LocalAgentClient } from "./local-agent-client.js";
+import { localAgentProviderConfigRevision } from "./local-agent-config.js";
 import { WorkLedger } from "./work-ledger.js";
 import { CodexAppServerRuntime, codexCommandEnvironment, resolveCodexCommand } from "./local-agent-codex.js";
 import { assertAllowedPath } from "./roots.js";
@@ -11,7 +12,8 @@ if (!/^agt_[a-z0-9]+$/.test(agentId ?? "") || !/^ws_[a-z0-9]+$/.test(workspaceId
 }
 const config = loadConfig();
 const workspaceRoot = assertAllowedPath(root, config.allowedRoots);
-const client = new LocalAgentClient({ stateDir: config.stateDir, configDir: config.configDir });
+const client = new LocalAgentClient({ stateDir: config.stateDir, configDir: config.configDir,
+  configRevision: localAgentProviderConfigRevision(config.subagents) });
 const found = await client.get(agentId!, { workspaceId, workspaceRoot });
 if (found.isErr()) throw new Error("Scoped managed agent is unavailable.");
 const agent = found.value;

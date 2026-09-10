@@ -18,6 +18,7 @@ readline.createInterface({input:process.stdin}).on('line', line => {
  const m = JSON.parse(line);
  if (m.method==='initialize') return send({id:m.id,result:{}});
  if (m.method==='account/rateLimits/read') return send({id:m.id,error:{code:-32601,message:'Optional quota metadata not supported by fixture'}});
+ if (m.method==='thread/read') return send({id:m.id,result:{thread:{id:m.params.threadId}}});
  if (m.method==='thread/start' || m.method==='thread/resume') {
    if (m.params.config?.['features.multi_agent'] !== false) return send({id:m.id,error:{message:'nested fanout must be disabled'}});
    return send({id:m.id,result:{thread:{id:'thread-fixture'}}});

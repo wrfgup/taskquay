@@ -1,10 +1,12 @@
 /** Bounded service preflight. Never invokes a provider or kills/deletes an owner. */
 import { loadConfig } from "./config.js";
 import { LocalAgentClient } from "./local-agent-client.js";
+import { localAgentProviderConfigRevision } from "./local-agent-config.js";
 import { isProcessAlive, localAgentDaemonPaths, readDaemonPid } from "./local-agent-daemon-lifecycle.js";
 
 const config = loadConfig();
 const client = new LocalAgentClient({ stateDir: config.stateDir, configDir: config.configDir,
+  configRevision: localAgentProviderConfigRevision(config.subagents),
   requestTimeoutMs: 4000, startupTimeoutMs: 15000 });
 let result = await client.status();
 let started = false;

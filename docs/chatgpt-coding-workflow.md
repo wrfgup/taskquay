@@ -155,7 +155,9 @@ agent for related work, and observe using bounded waits and known revisions.
 Managed shell commands now hold checkout claims, so do not wrap agent lifecycle
 commands in `exec_command` or `bash`. Direct terminal CLI remains available.
 The catalog comes from `open_workspace`; native `list` reports current sessions
-and concurrency policy. See [coordination and migration notes](configuration.md#codex-efficiency-and-execution-coordination).
+and concurrency policy. Outside an MCP host, the same skill teaches the direct
+`devspace agents targets`, `ls`, `run`, `continue`, `show`, and event-driven
+`wait` CLI workflow. See [coordination and migration notes](configuration.md#codex-efficiency-and-execution-coordination).
 
 ## Tool Names
 
