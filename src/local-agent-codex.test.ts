@@ -56,6 +56,10 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     output({ id: message.id, error: { code: -32601, message: "Optional metadata unavailable in this fixture" } });
     return;
   }
+  if (message.method === "thread/read") {
+    output({ id: message.id, result: { thread: { id: message.params.threadId } } });
+    return;
+  }
   if (message.method === "thread/start" || message.method === "thread/resume") {
     output({ id: message.id, result: { thread: { id: message.params.threadId || "thread_new" } } });
     return;
