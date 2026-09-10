@@ -24,6 +24,8 @@ assert.equal(isSubagentProviderEnabled(config, "codex"), true);
 assert.equal(isSubagentProviderEnabled(config, "claude"), false);
 assert.equal(isSubagentProviderEnabled(config, "pi"), false);
 assert.equal(subagentProviderConfig(config, "codex")?.model, "gpt-5.4");
+assert.equal(subagentsConfigSchema.parse({ enabled: true, providers: [{ id: "codex", enabled: true,
+  historyHandoff: "verified-unsupported" }] }).providers[0]?.historyHandoff, "verified-unsupported");
 assert.equal(
   subagentsConfigSchema.parse({ enabled: true, instructions: "preload", providers: [] }).instructions,
   "preload",
@@ -50,3 +52,5 @@ assert.throws(
   }),
   /Too small/,
 );
+assert.throws(() => subagentsConfigSchema.parse({ enabled: true,
+  providers: [{ id: "claude", enabled: true, historyHandoff: "verified-unsupported" }] }), /only the Codex provider/);

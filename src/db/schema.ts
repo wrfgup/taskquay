@@ -106,6 +106,8 @@ export const localAgentSessions = sqliteTable(
     contextKey: text("context_key"),
     contextSignature: text("context_signature"),
     workItemId: text("work_item_id"),
+    recoveryType: text("recovery_type"),
+    parentProviderSessionId: text("parent_provider_session_id"),
     status: text("status").notNull(),
     latestResponse: text("latest_response"),
     error: text("error"),

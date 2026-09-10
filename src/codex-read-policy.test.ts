@@ -23,15 +23,17 @@ test("analysis config disables external tools from all effective layers without 
 test("real RPC uses a stable instruction slot and rejects non-read-only confirmation before turn/start", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "devspace-read-policy-"));
   const script = join(root, "fake.cjs"); const log = join(root, "requests.jsonl");
-  writeFileSync(script, `const rl=require('node:readline'); const fs=require('node:fs'); let turn=0;
+  writeFileSync(script, `const rl=require('node:readline'); const fs=require('node:fs'); let turn=0,lastThread,lastTurn;
 const send=x=>process.stdout.write(JSON.stringify(x)+'\\n');
 rl.createInterface({input:process.stdin}).on('line',line=>{
  const m=JSON.parse(line); fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(m)+'\\n');
+ if(!m.method&&Number(m.id)>=1001) return send({method:'turn/completed',params:{threadId:lastThread,turn:{id:lastTurn,status:'completed',items:[{type:'agentMessage',text:'done'}]}}});
  if(m.method==='initialize') return send({id:m.id,result:{}});
  if(m.method==='config/read') return send({id:m.id,result:{config:{developer_instructions:'Existing rules.',mcp_servers:{remote:{enabled:true}}},layers:[]}});
+ if(m.method==='thread/read') return send({id:m.id,result:{thread:{id:m.params.threadId}}});
  if(m.method==='thread/start'||m.method==='thread/resume') return send({id:m.id,result:{thread:{id:m.params.threadId||'seed'},approvalPolicy:'never',sandbox:{type:m.params.threadId==='unsafe'?'workspaceWrite':'readOnly',networkAccess:false}}});
- if(m.method==='turn/start') { const id='turn-'+(++turn); send({id:m.id,result:{turn:{id}}});
-  setImmediate(()=>send({method:'turn/completed',params:{threadId:m.params.threadId,turn:{id,status:'completed',items:[{type:'agentMessage',text:'done'}]}}})); }
+ if(m.method==='turn/start') { const id='turn-'+(++turn); lastThread=m.params.threadId;lastTurn=id;send({id:m.id,result:{turn:{id}}});
+  setImmediate(()=>send({id:1000+turn,method:'item/commandExecution/requestApproval',params:{threadId:m.params.threadId,turnId:id}})); }
  if(m.method==='thread/unsubscribe') return send({id:m.id,result:{}});
 });`);
   const command = join(root, process.platform === "win32" ? "fake.cmd" : "fake");
@@ -50,6 +52,9 @@ rl.createInterface({input:process.stdin}).on('line',line=>{
   assert.equal(turns.length, 2, "Refused sandbox must not invoke the model");
   assert.deepEqual(turns.map((request) => request.params.input[0].text), ["first", "follow-up"]);
   assert(turns.every((request) => request.params.sandboxPolicy.type === "readOnly" && request.params.sandboxPolicy.networkAccess === false));
+  const approvalReplies = requests.filter((request) => Number(request.id) >= 1001 && request.error);
+  assert.equal(approvalReplies.length, 2);
+  assert(approvalReplies.every((reply) => reply.error.code === -32001 && /not approved/.test(reply.error.message)));
   for (const request of requests.filter((request) => /^thread\/(start|resume)$/.test(request.method))) {
     assert.equal(request.params.developerInstructions, "Existing rules.\n\nStable profile.");
     assert.equal(request.params.config["mcp_servers.remote.enabled"], false);

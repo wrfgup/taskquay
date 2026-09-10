@@ -184,6 +184,10 @@ node bin/devspace.js serve
 
 当前主要在 Windows 上开发和本地验证；上游跨平台代码及 CI 矩阵不代表当前所有功能都在所有平台通过。自动不可变快照、任意节点 fork、保证缓存命中和完整自动中断恢复不属于已完成承诺。
 
+受管 Codex 的本地 `approvalPolicy` 固定为 `never`，表示 DevSpace 不弹出本地审批框；它不会关闭 ChatGPT／OpenAI 宿主、操作系统或 provider 的安全判断，也不会自动批准网络、提权或未知请求。提供端若意外发起交互式 approval，DevSpace 会明确拒绝为“不可交互且未批准”，不会伪造工具 annotations 或无限等待。
+
+分页历史恢复不再按 `0.153.4` 版本字符串直接判死：DevSpace 先只读核对 thread identity，再以真实 `thread/resume` 结果为准。原生恢复明确拒绝分页历史时，默认仍停止并保留原线程与成功回执；可选 handoff 是带父线程引用的新空线程，并非完整上下文恢复，不会自动重放旧发布指令。根因、开关、验收命令和当前未启用状态见[审批与历史恢复说明](docs/approval-history-recovery-20260910.md)。
+
 聊天归档不是停止后台进程。归档／恢复的安全夹具已覆盖多种边界，但此前零推理空线程实验没有完成真实恢复验证；使用前先验证明确授权的新测试会话，不要拿重要或未纳管聊天做实验。出现传输中断先核对任务和线上状态，不盲目重发写入或发布。
 
 ## 开发、文档与许可
@@ -207,6 +211,7 @@ pnpm build
 | [并发与会话](docs/host-first-readonly-workflows.md) | 主控直读、只读共享与上下文亲和。 |
 | [配置参考](docs/configuration.md) | Provider、授权目录、并发和任务台。 |
 | [安全模型](docs/security.md) | 权限和部署边界。 |
+| [审批与历史恢复](docs/approval-history-recovery-20260910.md) | 本地免交互边界、原生 resume 与显式 handoff。 |
 | [第三方说明](THIRD_PARTY_NOTICES.md) | 依赖许可证与品牌使用边界。 |
 
 源码采用 [MIT](LICENSE)，保留 `Copyright (c) 2026 Waishnav` 及完整上游授权文本，来源见 [NOTICE](NOTICE)。依赖和模型服务分别适用自身条款，Claude Agent SDK 不因本项目 MIT 而变成 MIT。源码验收、运行服务启用和 npm 发布是不同阶段。

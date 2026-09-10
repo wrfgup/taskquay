@@ -183,19 +183,18 @@ export class CodexAppServerRuntime implements LocalAgentRuntime {
               nextAction: "check_provider_limits_before_resuming_original_thread" }),
           });
         }
-        // 0.153.4 can read paginated summaries but cannot resume their history.
-        // Do not silently fork, rewrite history, consume another session slot,
-        // or classify this capability mismatch as a model execution failure.
-        if (input.providerSessionId && this.options.version === "0.153.4") {
+        // Read controlled metadata for identity and safety, but do not infer a
+        // permanent capability from a CLI version string. Native resume remains
+        // authoritative and runs before an optional compatibility handoff.
+        let resumeSummary: Record<string, unknown> | undefined;
+        if (input.providerSessionId) {
           const summary = asRecord(await this.control("thread/read", { threadId: input.providerSessionId, includeTurns: false }));
-          const existing = asRecord(summary?.thread);
-          if (existing?.id !== input.providerSessionId) throw new AgentProviderProtocolError({
+          resumeSummary = asRecord(summary?.thread);
+          if (resumeSummary?.id !== input.providerSessionId) throw new AgentProviderProtocolError({
             code: "PROVIDER_PROTOCOL_ERROR", provider: "codex", operation: "history_preflight", retryable: false,
-            cause: "thread identity not confirmed", message: "Existing thread identity could not be verified; no resume or inference was requested.",
-          });
-          if (existing.historyMode === "paginated") throw new AgentProviderUnavailableError({
-            code: "PROVIDER_UNAVAILABLE", provider: "codex", operation: "history_preflight", retryable: false,
-            message: "PAGINATED_HISTORY_UNSUPPORTED: Codex 0.153.4 cannot resume this stored thread. Preserve its identity and results; use a provider version with verified paginated resume support or an explicitly authorized handoff. No thread, history, quota or session-budget policy was changed.",
+            cause: "thread identity not confirmed", message: JSON.stringify({ category: "thread_identity_unconfirmed",
+              nextAction: "agent_task.observe_then_continue_with_same_agent_and_new_request_key",
+              detail: "Existing thread identity could not be verified; no resume or inference was requested." }),
           });
         }
         let threadConfig: Record<string, unknown> = {};
@@ -220,11 +219,34 @@ export class CodexAppServerRuntime implements LocalAgentRuntime {
             input.profileInstructions,
           ].filter(Boolean).join("\n\n");
         }
-        const threadResponse = await this.rpc.request(
-          input.providerSessionId ? "thread/resume" : "thread/start",
-          { ...threadParams(input), config: { "features.multi_agent": false, "features.multi_agent_v2": false, ...threadConfig },
-            ...(developerInstructions ? { developerInstructions } : {}) },
-        );
+        const openParams = { ...threadParams(input), config: { "features.multi_agent": false, "features.multi_agent_v2": false, ...threadConfig },
+          ...(developerInstructions ? { developerInstructions } : {}) };
+        let handoffParent: string | undefined;
+        let threadResponse: unknown;
+        try {
+          threadResponse = await this.rpc.request(input.providerSessionId ? "thread/resume" : "thread/start", openParams);
+        } catch (cause) {
+          if (!input.providerSessionId || resumeSummary?.historyMode !== "paginated" || !isExplicitPaginatedResumeUnsupported(cause)) throw cause;
+          const safeStatus = threadStatusType(resumeSummary);
+          const sameWorkspace = typeof resumeSummary.cwd === "string" && resolve(resumeSummary.cwd) === resolve(input.workspaceRoot);
+          const enabled = input.historyHandoff === "verified-unsupported";
+          if (!enabled || !input.requestKey || !sameWorkspace || !["idle", "notLoaded"].includes(safeStatus ?? "")) {
+            throw new AgentProviderUnavailableError({
+              code: "PROVIDER_UNAVAILABLE", provider: "codex", operation: "history_resume", retryable: false, cause,
+              message: JSON.stringify({ category: "PAGINATED_HISTORY_UNSUPPORTED", nativeResume: "explicitly_rejected",
+                providerVersion: this.options.version ?? "unknown", threadId: input.providerSessionId,
+                threadStatus: safeStatus ?? "unknown", sameWorkspace, handoffEnabled: enabled,
+                nextAction: enabled
+                  ? "agent_task.continue_with_same_agent_workRunId_and_new_requestKey_after_terminal_scope_check"
+                  : "set_subagents_codex_historyHandoff_verified-unsupported_then_restart_after_review" }),
+            });
+          }
+          handoffParent = input.providerSessionId;
+          // This is a new empty thread. Only the caller's current prompt and
+          // separately verified host context reach turn/start; prior responses,
+          // release instructions, and provider history are not replayed.
+          threadResponse = await this.rpc.request("thread/start", { ...openParams, threadId: undefined });
+        }
         if (input.analysisOnly) {
           const opened = asRecord(threadResponse);
           const sandbox = asRecord(opened?.sandbox);
@@ -243,8 +265,13 @@ export class CodexAppServerRuntime implements LocalAgentRuntime {
             message: "Codex app-server did not return a thread id.",
           });
         }
-
-        await callbacks?.onSessionId?.(threadId);
+        if (input.providerSessionId && !handoffParent && threadId !== input.providerSessionId) {
+          throw new AgentProviderProtocolError({ code: "PROVIDER_PROTOCOL_ERROR", provider: "codex", operation: "thread/resume",
+            retryable: false, cause: "thread identity changed",
+            message: "Codex native resume returned a different thread identity; no turn was started." });
+        }
+        if (handoffParent) await callbacks?.onHistoryHandoff?.({ type: "fresh_thread_handoff", parentThreadId: handoffParent, threadId });
+        else await callbacks?.onSessionId?.(threadId);
         if (callbacks?.onThreadInfo) {
           const identity = await this.identity(true);
           let priorTurnIds: string[] | null = input.providerSessionId ? null : [];
@@ -260,10 +287,11 @@ export class CodexAppServerRuntime implements LocalAgentRuntime {
               }
             } catch { /* A missing boundary is reported as unknown, not billed to this task. */ }
           }
-          await callbacks.onThreadInfo({ ...identity, threadId, createdHere: !input.providerSessionId,
-            priorTurnIds, priorTurnsClosed, title: input.sessionLabel });
+          await callbacks.onThreadInfo({ ...identity, threadId, createdHere: !input.providerSessionId || Boolean(handoffParent),
+            priorTurnIds: handoffParent ? [] : priorTurnIds, priorTurnsClosed: handoffParent ? true : priorTurnsClosed,
+            title: input.sessionLabel });
         }
-        if (!input.providerSessionId && input.sessionLabel) {
+        if ((!input.providerSessionId || handoffParent) && input.sessionLabel) {
           try { await this.control("thread/name/set", { threadId, name: input.sessionLabel }); callbacks?.onNameResult?.(true); }
           catch { callbacks?.onNameResult?.(false); }
         }
@@ -274,7 +302,7 @@ export class CodexAppServerRuntime implements LocalAgentRuntime {
           const usage = parseCodexUsage(value);
           if (!usage || usage.threadId !== threadId) return;
           // Telemetry failure must not cause paid work to be retried or crash the protocol loop.
-          try { callbacks?.onUsage?.({ ...usage, newThread: !input.providerSessionId, providerVersion: this.options.version }); }
+          try { callbacks?.onUsage?.({ ...usage, newThread: !input.providerSessionId || Boolean(handoffParent), providerVersion: this.options.version }); }
           catch { /* Missing telemetry remains unknown; it is never synthesized as zero. */ }
         }, callbacks?.onTurnStarted, (activity) => {
           try { callbacks?.onActivity?.(activity); } catch { /* Progress cannot fail or replay paid work. */ }
@@ -605,7 +633,10 @@ class CodexAppServerRpc {
       return;
     }
     if (id && method) {
-      this.write({ id: message.id, error: { code: -32601, message: `Unsupported app-server request: ${method}` } });
+      const approvalRequest = /(?:requestApproval|request_approval|approval\/request)$/i.test(method);
+      this.write({ id: message.id, error: approvalRequest
+        ? { code: -32001, message: "DevSpace runs managed local Codex turns with approvalPolicy=never; interactive approval is unavailable and this operation was not approved." }
+        : { code: -32601, message: `Unsupported app-server request: ${method}` } });
       return;
     }
     if (!method) return;
@@ -791,6 +822,26 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : undefined;
+}
+
+function threadStatusType(thread: Record<string, unknown>): string | undefined {
+  const status = thread.status;
+  if (typeof status === "string") return status;
+  return readString(status, "type");
+}
+
+function isExplicitPaginatedResumeUnsupported(error: unknown): boolean {
+  const seen = new Set<object>();
+  let current: unknown = error;
+  const messages: string[] = [];
+  while (current && typeof current === "object" && !seen.has(current)) {
+    seen.add(current);
+    if (current instanceof Error) messages.push(current.message);
+    else if (typeof asRecord(current)?.message === "string") messages.push(String(asRecord(current)!.message));
+    current = asRecord(current)?.cause;
+  }
+  return messages.some((message) => /(?:paginated(?:[_ -]history)?|historyMode[^\n]*paginated)[^\n]{0,160}(?:unsupported|not supported|cannot (?:be )?resume|resume[^\n]*unavailable)/i.test(message)
+    || /PAGINATED_HISTORY_UNSUPPORTED/.test(message));
 }
 
 function readString(value: unknown, key: string): string | undefined {

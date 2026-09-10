@@ -555,6 +555,15 @@ export class LocalAgentManager {
           const updated = this.store.updateResult(record.id, { providerSessionId });
           if (updated.isErr()) throw updated.error;
         },
+        onHistoryHandoff: (handoff) => {
+          claim?.bindThread(`${record.provider}:${handoff.threadId}`);
+          const updated = this.store.updateResult(record.id, {
+            providerSessionId: handoff.threadId,
+            recoveryType: handoff.type,
+            parentProviderSessionId: handoff.parentThreadId,
+          });
+          if (updated.isErr()) throw updated.error;
+        },
       };
       // An older/uninstrumented Codex adapter must never turn unknown paid work into zero.
       if (executionId && record.provider === "codex") this.ledger.providerDispatchStarted(executionId);
@@ -673,6 +682,8 @@ export class LocalAgentManager {
       effort: record.effort ?? profile?.effort,
       modelOverrideRequested: overrides.model !== undefined,
       effortOverrideRequested: overrides.effort !== undefined,
+      requestKey: overrides.requestKey,
+      historyHandoff: this.subagents.providers.find((provider) => provider.id === record.provider)?.historyHandoff,
     });
   }
 

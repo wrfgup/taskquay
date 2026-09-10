@@ -173,6 +173,10 @@ migrations.push({ version: 14, name: "successful-execution-responses", up(sqlite
     response text not null, sha256 text not null, bytes integer not null
   );`);
 } });
+migrations.push({ version: 15, name: "agent-history-handoff-lineage", up(sqlite) {
+  addColumnIfMissing(sqlite, "local_agent_sessions", "recovery_type", "text");
+  addColumnIfMissing(sqlite, "local_agent_sessions", "parent_provider_session_id", "text");
+} });
 
 function migrateWorkspaceState(sqlite: Database.Database): void {
   sqlite.exec(`

@@ -275,6 +275,14 @@
                   }
                 },
                 "additionalProperties": false
+              },
+              "historyHandoff": {
+                "description": "Owner opt-in for a traced fresh-thread handoff only after Codex explicitly rejects paginated history resume.",
+                "type": "string",
+                "enum": [
+                  "disabled",
+                  "verified-unsupported"
+                ]
               }
             },
             "required": [

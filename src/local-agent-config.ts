@@ -18,6 +18,8 @@ const providerSchema = z.object({
     model: z.string().trim().min(1).optional(),
     effort: z.string().trim().min(1).optional(),
   }).strict().optional(),
+  historyHandoff: z.enum(["disabled", "verified-unsupported"]).optional()
+    .describe("Owner opt-in for a traced fresh-thread handoff only after Codex explicitly rejects paginated history resume."),
 }).strict();
 
 export const subagentsConfigSchema = z.object({
@@ -35,6 +37,10 @@ export const subagentsConfigSchema = z.object({
     if (provider.reasoningLimits?.length && provider.id !== "codex") {
       context.addIssue({ code: "custom", path: ["providers", index, "reasoningLimits"],
         message: "Reasoning limits currently support only the Codex provider." });
+    }
+    if (provider.historyHandoff && provider.id !== "codex") {
+      context.addIssue({ code: "custom", path: ["providers", index, "historyHandoff"],
+        message: "History handoff currently supports only the Codex provider." });
     }
     if (seen.has(provider.id)) {
       context.addIssue({

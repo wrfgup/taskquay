@@ -28,6 +28,8 @@ export interface LocalAgentRecord {
   contextKey?: string;
   contextSignature?: string;
   workItemId?: string;
+  recoveryType?: "fresh_thread_handoff";
+  parentProviderSessionId?: string;
 }
 
 export interface CreateLocalAgentRecordInput {
@@ -72,6 +74,8 @@ interface LocalAgentRow {
   context_key: string | null;
   context_signature: string | null;
   work_item_id: string | null;
+  recovery_type: string | null;
+  parent_provider_session_id: string | null;
 }
 
 export class LocalAgentStore {
@@ -215,6 +219,7 @@ export class LocalAgentStore {
           const found = this.database.sqlite.prepare(`select * from local_agent_sessions where workspace_root = ?
             and coalesce(workspace_id, '') = ? and profile_name = ? and work_item_id = ? and context_key = ?
             and context_signature = ? and status in ('starting', 'queued', 'running', 'idle', 'error', 'stopped')
+            and not (status = 'error' and error like '%PAGINATED_HISTORY_UNSUPPORTED%')
             order by updated_at desc limit 1`)
             .get(resolve(input.workspaceRoot), input.workspaceId ?? "", input.profileName, input.workItemId,
               input.contextKey, input.contextSignature) as LocalAgentRow | undefined;
@@ -334,6 +339,8 @@ export class LocalAgentStore {
           context_key = ?,
           context_signature = ?,
           work_item_id = ?,
+          recovery_type = ?,
+          parent_provider_session_id = ?,
           updated_at = ?,
           progress = ?
          where id = ?`,
@@ -354,6 +361,8 @@ export class LocalAgentStore {
         updated.contextKey ?? null,
         updated.contextSignature ?? null,
         updated.workItemId ?? null,
+        updated.recoveryType ?? null,
+        updated.parentProviderSessionId ?? null,
         updated.updatedAt,
         updated.progress ? JSON.stringify(decodeAgentProgress(updated.progress)) : null,
         updated.id,
@@ -418,6 +427,8 @@ function rowToLocalAgentRecord(row: LocalAgentRow): LocalAgentRecord {
     contextKey: row.context_key ?? undefined,
     contextSignature: row.context_signature ?? undefined,
     workItemId: row.work_item_id ?? undefined,
+    recoveryType: row.recovery_type === "fresh_thread_handoff" ? row.recovery_type : undefined,
+    parentProviderSessionId: row.parent_provider_session_id ?? undefined,
   };
 }
 

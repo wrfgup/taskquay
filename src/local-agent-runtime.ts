@@ -21,6 +21,10 @@ export interface LocalAgentRunInput {
   /** Stable profile slot, separate from each new user task. */
   profileInstructions?: string;
   sessionLabel?: string;
+  /** Stable identity for this new continuation request. Required for history handoff. */
+  requestKey?: string;
+  /** Owner-controlled compatibility policy. This is not native history resume. */
+  historyHandoff?: "disabled" | "verified-unsupported";
 }
 
 export interface LocalAgentRunResult {
@@ -46,6 +50,8 @@ export interface LocalAgentRunCallbacks {
    * could otherwise fail and lose that identity.
    */
   onSessionId?: (providerSessionId: string) => void | Promise<void>;
+  /** Records a new-thread compatibility lineage before any handoff turn starts. */
+  onHistoryHandoff?: (handoff: { type: "fresh_thread_handoff"; parentThreadId: string; threadId: string }) => void | Promise<void>;
 }
 
 export interface LocalAgentRuntimeContext {

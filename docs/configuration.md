@@ -200,6 +200,8 @@ Subagent providers are explicit. Omitted providers are disabled:
         "enabled": true,
         "model": "gpt-5.4",
         "effort": "high",
+        // Default is omitted/disabled. This is a new-thread handoff, not full history resume.
+        "historyHandoff": "verified-unsupported",
       },
       {
         "id": "claude",
@@ -220,6 +222,14 @@ Subagent providers are explicit. Omitted providers are disabled:
 
 Both modes only make the workflow available; neither tells the model to prefer
 subagents for routine work.
+
+Codex `historyHandoff` is owner-controlled and defaults to disabled. The only
+enabled value is `verified-unsupported`: after an identity-matched, terminal,
+same-workspace paginated thread is explicitly rejected by native `thread/resume`,
+a continuation with an explicit new `requestKey` may create a traced empty thread.
+It does not copy provider history or replay an earlier response. Quota,
+authentication, transport/unknown errors, active turns, and scope mismatches never
+fall back. See [approval and history recovery](approval-history-recovery-20260910.md).
 
 Profiles are loaded from `~/.devspace/agents/*.md` and project
 `.devspace/agents/*.md`. `devspace agents targets` prints the configured targets
