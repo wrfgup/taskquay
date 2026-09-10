@@ -8,7 +8,7 @@ import {
 } from "../pi-tools.js";
 import {
   EDIT_TOOL_ANNOTATIONS,
-  SHELL_TOOL_ANNOTATIONS,
+  shellToolAnnotations,
   WRITE_TOOL_ANNOTATIONS,
   toolNames,
   workspaceIdDescription,
@@ -204,7 +204,7 @@ function registerShellTool(context: ToolRegistrationContext): void {
           .describe("Timeout in seconds. Defaults to 30, max 300."),
       },
       outputSchema: resultOutputSchema(),
-      annotations: SHELL_TOOL_ANNOTATIONS,
+      annotations: shellToolAnnotations(config),
     },
     async ({ workspaceId, workingDirectory, workRunId, ...input }) => {
       const startedAt = performance.now();

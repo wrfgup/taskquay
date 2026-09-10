@@ -99,6 +99,11 @@
             "claude",
             "codex"
           ]
+        },
+        "dangerouslySkipCommandReview": {
+          "default": false,
+          "description": "Owner opt-in to advertise MCP shell tools as not requiring destructive-command review. Commands still run with the local user's authority, and remote hosts may enforce independent confirmation.",
+          "type": "boolean"
         }
       },
       "additionalProperties": false

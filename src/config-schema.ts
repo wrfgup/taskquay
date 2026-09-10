@@ -24,6 +24,9 @@ const storageConfigSchema = z.object({
 
 const toolsConfigSchema = z.object({
   mode: z.enum(["claude", "codex"]).default("codex"),
+  dangerouslySkipCommandReview: z.boolean().default(false).describe(
+    "Owner opt-in to advertise MCP shell tools as not requiring destructive-command review. Commands still run with the local user's authority, and remote hosts may enforce independent confirmation.",
+  ),
 }).strict().prefault({});
 
 const uiConfigSchema = z.object({

@@ -84,6 +84,34 @@ test("tool modes expose the expected host-facing tool surface", async (t) => {
   }
 });
 
+test("command review opt-in changes only shell destructive annotations", async (t) => {
+  for (const mode of ["codex", "claude"] as const) {
+    await t.test(mode, async (nested) => {
+      const reviewed = await fixture(nested, {
+        toolMode: mode,
+        dangerouslySkipCommandReview: false,
+      });
+      const preauthorized = await fixture(nested, {
+        toolMode: mode,
+        dangerouslySkipCommandReview: true,
+      });
+      const commandNames = mode === "codex" ? ["exec_command", "write_stdin"] : ["bash"];
+      const reviewedTools = (await reviewed.client.listTools()).tools;
+      const preauthorizedTools = (await preauthorized.client.listTools()).tools;
+
+      for (const name of commandNames) {
+        const reviewedAnnotations = reviewedTools.find((tool) => tool.name === name)?.annotations;
+        const preauthorizedAnnotations = preauthorizedTools.find((tool) => tool.name === name)?.annotations;
+        assert.equal(reviewedAnnotations?.destructiveHint, true);
+        assert.equal(preauthorizedAnnotations?.destructiveHint, false);
+        assert.equal(preauthorizedAnnotations?.readOnlyHint, false);
+        assert.equal(preauthorizedAnnotations?.idempotentHint, false);
+        assert.equal(preauthorizedAnnotations?.openWorldHint, true);
+      }
+    });
+  }
+});
+
 test("UI metadata is limited to workspace and aggregate review", async (t) => {
   for (const uiEnabled of [true, false]) {
     await t.test(uiEnabled ? "enabled" : "disabled", async (nested) => {
@@ -634,6 +662,7 @@ async function fixture(
     localAgentProviders?: LocalAgentProviderAvailability[] | (() => LocalAgentProviderAvailability[]);
     subagents?: SubagentsConfig;
     toolMode?: ToolMode;
+    dangerouslySkipCommandReview?: boolean;
     uiEnabled?: boolean;
   } = {},
 ): Promise<ServerFixture> {
@@ -681,6 +710,8 @@ async function fixture(
   const modeConfig: ServerConfig = {
     ...loadedConfig,
     toolMode: options.toolMode ?? loadedConfig.toolMode,
+    dangerouslySkipCommandReview:
+      options.dangerouslySkipCommandReview ?? loadedConfig.dangerouslySkipCommandReview,
     uiEnabled: options.uiEnabled ?? loadedConfig.uiEnabled,
   };
   const config: ServerConfig = options.localAgentProviders

@@ -105,6 +105,8 @@ Run `devspace init` to create both files. `devspace config set publicBaseUrl
   },
   "tools": {
     "mode": "codex",
+    // Dangerous owner opt-in. Keep false unless the remote MCP client is trusted.
+    "dangerouslySkipCommandReview": false,
   },
   "ui": {
     "enabled": true,
@@ -163,6 +165,18 @@ After restarting, refresh tokens for removed aliases can no longer mint tokens.
 | --- | --- |
 | `codex` | Default. `open_workspace`, `read`, `workspace_context`, `work_task`, `agent_task`, `apply_patch`, `exec_command`, `write_stdin`, and `show_changes`. |
 | `claude` | `open_workspace`, `read`, `workspace_context`, `work_task`, `agent_task`, `write`, `edit`, `bash`, and `show_changes`. |
+
+`tools.dangerouslySkipCommandReview` defaults to `false`. When set to `true`,
+DevSpace advertises `exec_command`, `write_stdin`, or `bash` with
+`destructiveHint: false`, recording that the machine owner has preauthorized
+remote command execution instead of reviewing each command as destructive.
+The tools remain correctly marked as write-capable, non-idempotent, and
+open-world. This setting does not parse or restrict shell contents: commands run
+with the local user's authority. It also does not disable OAuth, allowed-root
+checks for file/workspace tools, execution claims, process ownership checks,
+operating-system controls, provider controls, or a remote host's independent
+mandatory confirmation policy. Restart DevSpace and refresh the MCP connection
+metadata after changing it.
 
 The dedicated tools `grep`, `glob`, and `ls` are not exposed. `workspace_context`
 provides nonrecursive listing and literal search/capture over selected files without

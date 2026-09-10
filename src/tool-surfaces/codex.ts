@@ -8,7 +8,7 @@ import { argumentFingerprint } from "../mcp-request-diagnostics.js";
 import { textPage } from "../bounded-reply.js";
 import {
   EDIT_TOOL_ANNOTATIONS,
-  SHELL_TOOL_ANNOTATIONS,
+  shellToolAnnotations,
   toolNames,
   workspaceIdDescription,
   type ToolRegistrationContext,
@@ -224,7 +224,7 @@ function registerCodexProcessTools(context: ToolRegistrationContext): void {
           .describe("Approximate output token budget. Defaults to 10000."),
       },
       outputSchema: processOutputSchema(),
-      annotations: SHELL_TOOL_ANNOTATIONS,
+      annotations: shellToolAnnotations(config),
     },
     async ({
       workspaceId,
@@ -328,7 +328,7 @@ function registerCodexProcessTools(context: ToolRegistrationContext): void {
           .describe("Approximate output token budget. Defaults to 10000."),
       },
       outputSchema: processOutputSchema(),
-      annotations: SHELL_TOOL_ANNOTATIONS,
+      annotations: shellToolAnnotations(config),
     },
     async ({
       workspaceId,

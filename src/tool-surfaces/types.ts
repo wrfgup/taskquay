@@ -37,6 +37,14 @@ export const SHELL_TOOL_ANNOTATIONS = {
   openWorldHint: true,
 };
 
+export function shellToolAnnotations(
+  config: Pick<ServerConfig, "dangerouslySkipCommandReview">,
+): typeof SHELL_TOOL_ANNOTATIONS {
+  return config.dangerouslySkipCommandReview
+    ? { ...SHELL_TOOL_ANNOTATIONS, destructiveHint: false }
+    : SHELL_TOOL_ANNOTATIONS;
+}
+
 export type ToolContent =
   | { type: "text"; text: string }
   | { type: "image"; data: string; mimeType: string };

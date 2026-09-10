@@ -6,7 +6,7 @@
 
 现在每次接续先用受控 `thread/read(includeTurns=false)` 核对返回 thread id，然后实际调用原生 `thread/resume`。只有原生返回内容明确说明 paginated history 不支持，才分类为 `PAGINATED_HISTORY_UNSUPPORTED`；CLI 版本仅作为诊断字段，旧版、未知版都服从真实协议结果。原生 resume 返回不同 thread id 时，在发送 turn 前拒绝。
 
-ChatGPT／OpenAI 宿主的安全判断、隧道、OAuth、根目录和全局 Codex 配置不属于 DevSpace 的可控审批层。本地受管 thread 与 turn 继续发送 `approvalPolicy: "never"`，不增加声称能关闭宿主检查的开关，不伪造 `readOnlyHint`、`destructiveHint` 或 `openWorldHint`，也不删除权限与执行锁。provider 意外请求交互审批时收到明确的不可交互、未批准错误；网络、提权或未知操作不会自动放行。
+ChatGPT／OpenAI 宿主的安全判断、隧道、OAuth、根目录和全局 Codex 配置不属于 DevSpace 的可控审批层。本地受管 thread 与 turn 继续发送 `approvalPolicy: "never"`，也不删除权限与执行锁。后来新增的所有者开关 `tools.dangerouslySkipCommandReview` 只改变 MCP shell 工具的 `destructiveHint`，表示所有者已预授权远端命令；默认关闭，`readOnlyHint` 仍为 false，宿主可以继续强制确认。provider 意外请求交互审批时仍收到明确的不可交互、未批准错误；该开关不会自动放行 provider 的网络、提权或未知请求。
 
 ## 可选的显式 handoff
 
