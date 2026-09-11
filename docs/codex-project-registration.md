@@ -12,6 +12,8 @@ Opening a directory, saving a DevSpace project, saving a Desktop project, and as
 
 The Codex driver checks registration before opening a thread and assigns the resulting thread before `turn/start`. It persists the original thread identity through the normal session/ledger callbacks before reporting assignment failure. No registration or recovery operation invokes a model. Continue with the original task/request identities; never create a replacement model task to retry registration. Existing multi-root projects are reused without replacing their other roots. Ambiguous projects, a different existing thread owner, mismatched cwd/provider home, schema changes and observed concurrent metadata changes stop registration.
 
+Managed active-turn control keeps that exact registered thread identity. The local console may open `codex://threads/<thread-id>`, while `turn/steer` and `turn/interrupt` remain bound to the DevSpace app-server connection that started the turn. Project assignment and a visible Desktop row do not prove that Desktop subscribed to another process's item stream; `/console/` is the verified live view until native refresh is separately observed.
+
 ## Verified Desktop control protocol
 
 Verified locally against Windows Desktop **26.901.6511.0**, bundled **codex-cli 0.153.4**. The installed client bundle invokes `project/list`, `project/create` with `idempotencyKey`, and `project/read`; its generated experimental schema defines `thread/metadata/update` with `threadId` and `projectId`. These calls were exercised against the installed binary. The generic [app-server documentation](https://learn.chatgpt.com/docs/app-server) does not by itself establish availability of this Desktop project protocol.

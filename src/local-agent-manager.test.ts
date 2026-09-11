@@ -13,12 +13,14 @@ import type {
   LocalAgentDriver,
   LocalAgentRunInput,
   LocalAgentRunResult,
+  LocalAgentRunCallbacks,
   LocalAgentRuntime,
   LocalAgentRuntimeContext,
 } from "./local-agent-runtime.js";
 import { LocalAgentRuntimePool } from "./local-agent-runtime-pool.js";
 import { LocalAgentStore } from "./local-agent-store.js";
 import type { SubagentsConfig } from "./local-agent-config.js";
+import { WorkLedger } from "./work-ledger.js";
 
 const root = await mkdtemp(join(tmpdir(), "devspace-agent-manager-test-"));
 const directRoot = await mkdtemp(join(tmpdir(), "devspace-direct-agent-manager-test-"));
@@ -52,12 +54,21 @@ class FakeRuntime implements LocalAgentRuntime {
   readonly inputs: LocalAgentRunInput[] = [];
   closed = false;
   private releaseHold: (() => void) | undefined;
+  steers: string[] = [];
+  interrupts = 0;
 
   async run(
     input: LocalAgentRunInput,
-    callbacks?: { onSessionId?: (id: string) => void | Promise<void> },
+    callbacks?: LocalAgentRunCallbacks,
   ): Promise<BetterResult<LocalAgentRunResult, AgentProviderError>> {
     this.inputs.push(input);
+    const providerThreadId = input.prompt.includes("hold wait") ? `thread_${input.prompt.replace(/\W+/g, "_")}` : "thread_test";
+    const providerTurnId = input.prompt.includes("hold wait") ? `turn_${input.prompt.replace(/\W+/g, "_")}` : "turn_test";
+    await callbacks?.onSessionId?.(providerThreadId);
+    await callbacks?.onTurnStarted?.(providerTurnId);
+    await callbacks?.onControlReady?.({ providerThreadId, providerTurnId,
+      steer: async (prompt) => { this.steers.push(prompt); return { turnId: providerTurnId }; },
+      interrupt: async () => { this.interrupts++; this.release(); }, isAlive: () => !this.closed });
     if (input.prompt.includes("early-fail")) {
       await callbacks?.onSessionId?.("thread_early");
       return Result.err(providerFailure("provider failed after session creation"));
@@ -69,7 +80,7 @@ class FakeRuntime implements LocalAgentRuntime {
     }
     return Result.ok({
       provider: this.provider,
-      providerSessionId: "thread_test",
+      providerSessionId: providerThreadId,
       finalResponse: `response:${input.prompt}`,
       items: [],
     });
@@ -239,6 +250,24 @@ assert.equal(first.model, "gpt-default");
 assert.equal(first.effort, "medium");
 await waitFor(() => runtimes.get(first.id)?.inputs.length === 1);
 assert.equal(runtimes.get(first.id)!.inputs[0].writeMode, "full_access");
+await waitFor(() => getRecord(first.id).controlState === "devspace_active");
+const firstLedger = new WorkLedger(stateDir);
+const firstWorkRunId = firstLedger.latestExecution(first.id)!.run_id;
+firstLedger.close();
+const steered = unwrap(await manager.control({ agentId: first.id, action: "steer", workRunId: firstWorkRunId,
+  requestKey: "steer-1", expectedTurnId: "turn_test", prompt: "focus tests", scope }));
+assert.equal(steered.providerTurnId, "turn_test");
+assert.deepEqual(runtimes.get(first.id)!.steers, ["focus tests"]);
+unwrap(await manager.control({ agentId: first.id, action: "steer", workRunId: firstWorkRunId,
+  requestKey: "steer-1", expectedTurnId: "turn_test", prompt: "focus tests", scope }));
+assert.deepEqual(runtimes.get(first.id)!.steers, ["focus tests"], "idempotent replay must not steer twice");
+const staleControl = await manager.control({ agentId: first.id, action: "steer", workRunId: firstWorkRunId,
+  requestKey: "steer-stale", expectedTurnId: "turn_stale", prompt: "wrong", scope });
+assert.equal(staleControl.isErr(), true);
+assert.deepEqual(runtimes.get(first.id)!.steers, ["focus tests"]);
+const crossRunControl = await manager.control({ agentId: first.id, action: "steer", workRunId: "run_not_owned",
+  requestKey: "steer-cross-run", expectedTurnId: "turn_test", prompt: "wrong", scope });
+assert.equal(crossRunControl.isErr(), true);
 const conflict = await manager.continue(first.id, "another prompt", {}, scope);
 assert.equal(conflict.isErr(), true);
 if (conflict.isErr()) {
@@ -246,8 +275,17 @@ if (conflict.isErr()) {
   assert.equal("agentId" in conflict.error ? conflict.error.agentId : undefined, first.id);
 }
 
-runtimes.get(first.id)!.release();
+const takeover = unwrap(await manager.control({ agentId: first.id, action: "takeover", workRunId: firstWorkRunId,
+  requestKey: "takeover-1", expectedTurnId: "turn_test", scope }));
+assert.equal(takeover.controlState, "desktop_owned");
+assert.equal(runtimes.get(first.id)!.interrupts, 1);
 await waitFor(() => getRecord(first.id).status === "idle");
+assert.equal(getRecord(first.id).controlState, "desktop_owned");
+const desktopBlocked = await manager.continue(first.id, "continue while desktop owns", { requestKey: "blocked-continue" }, scope);
+assert.equal(desktopBlocked.isErr(), true);
+unwrap(await manager.control({ agentId: first.id, action: "returnControl", workRunId: firstWorkRunId,
+  requestKey: "return-1", scope }));
+assert.equal(getRecord(first.id).controlState, "terminal");
 assert.equal(getRecord(first.id).providerSessionId, "thread_test");
 assert.match(getRecord(first.id).latestResponse ?? "", /Task:\nhold/);
 assert.deepEqual(

@@ -25,6 +25,7 @@ import type {
   LocalAgentRunResult,
   LocalAgentRuntime,
   LocalAgentRuntimeContext,
+  LocalAgentTurnControl,
   LocalAgentWriteMode,
 } from "./local-agent-runtime.js";
 
@@ -304,7 +305,7 @@ export class CodexAppServerRuntime implements LocalAgentRuntime {
           // Telemetry failure must not cause paid work to be retried or crash the protocol loop.
           try { callbacks?.onUsage?.({ ...usage, newThread: !input.providerSessionId || Boolean(handoffParent), providerVersion: this.options.version }); }
           catch { /* Missing telemetry remains unknown; it is never synthesized as zero. */ }
-        }, callbacks?.onTurnStarted, (activity) => {
+        }, callbacks?.onTurnStarted, callbacks?.onControlReady, (activity) => {
           try { callbacks?.onActivity?.(activity); } catch { /* Progress cannot fail or replay paid work. */ }
         });
         callbacks?.onProviderFinished?.();
@@ -496,7 +497,7 @@ interface CodexTurnAccumulator {
   reject: (error: Error) => void;
 }
 
-class CodexAppServerRpc {
+export class CodexAppServerRpc {
   private readonly pending = new Map<string, {
     resolve: (value: unknown) => void;
     reject: (error: Error) => void;
@@ -545,7 +546,9 @@ class CodexAppServerRpc {
   }
 
   async runTurn(threadId: string, params: unknown, onUsage?: (value: unknown) => void,
-    onTurnStarted?: (turnId: string) => void | Promise<void>, onActivity?: (activity: AgentActivity) => void): Promise<CodexTurnResult> {
+    onTurnStarted?: (turnId: string) => void | Promise<void>,
+    onControlReady?: (control: LocalAgentTurnControl) => void | Promise<void>,
+    onActivity?: (activity: AgentActivity) => void): Promise<CodexTurnResult> {
     if (this.fatalError) throw this.fatalError;
     if (this.turns.has(threadId)) throw new Error(`Codex thread ${threadId} already has an active turn.`);
     let resolveTurn!: (result: CodexTurnResult) => void;
@@ -569,6 +572,27 @@ class CodexAppServerRpc {
       const response = await this.request("turn/start", params);
       turn.turnId = readString(asRecord(response)?.turn, "id");
       if (turn.turnId) await onTurnStarted?.(turn.turnId);
+      if (turn.turnId) {
+        const providerTurnId = turn.turnId;
+        await onControlReady?.({
+          providerThreadId: threadId,
+          providerTurnId,
+          steer: async (prompt) => {
+            const result = asRecord(await this.request("turn/steer", {
+              threadId,
+              expectedTurnId: providerTurnId,
+              input: [{ type: "text", text: prompt }],
+            }));
+            const turnId = readString(result, "turnId");
+            if (turnId !== providerTurnId) throw new Error("Codex accepted steering for a different turn identity.");
+            return { turnId };
+          },
+          interrupt: async () => {
+            await this.request("turn/interrupt", { threadId, turnId: providerTurnId });
+          },
+          isAlive: () => !this.fatalError && this.turns.get(threadId) === turn,
+        });
+      }
       for (const pending of turn.pendingActivity) {
         if (turn.turnId && turnMatchesEvent(turn, pending.event)) turn.onActivity?.(pending.activity);
       }

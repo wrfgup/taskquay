@@ -4,6 +4,8 @@ import type {
   LocalAgentWorkspaceScope,
 } from "./local-agent-store.js";
 import type {
+  LocalAgentControlInput,
+  LocalAgentControlReceipt,
   LocalAgentWaitResult,
   RunOverrides,
   StartLocalAgentInput,
@@ -18,6 +20,7 @@ export type LocalAgentDaemonMethod =
   | "agent.start"
   | "agent.continue"
   | "agent.cancelQueued"
+  | "agent.control"
   | "agent.get"
   | "agent.list"
   | "agent.wait"
@@ -31,6 +34,7 @@ export type LocalAgentDaemonRequest =
   | AgentDaemonRequestBase<"agent.continue", { id: string; prompt: string; scope: LocalAgentWorkspaceScope; overrides?: RunOverrides }>
   | AgentDaemonRequestBase<"agent.get", { id: string; scope: LocalAgentWorkspaceScope }>
   | AgentDaemonRequestBase<"agent.cancelQueued", { id: string; scope: LocalAgentWorkspaceScope }>
+  | AgentDaemonRequestBase<"agent.control", LocalAgentControlInput>
   | AgentDaemonRequestBase<"agent.list", LocalAgentWorkspaceScope>
   | AgentDaemonRequestBase<"agent.wait", {
       ids: string[];
@@ -145,6 +149,8 @@ export function decodeLocalAgentDaemonRequest(value: unknown): LocalAgentDaemonR
         method,
         params: decodeContinueInput(params),
       } as LocalAgentDaemonRequest;
+    case "agent.control":
+      return { requestId, protocolVersion, authToken, method, params: decodeControlInput(params) };
     case "agent.cancelQueued":
     case "agent.get":
       return {
@@ -238,12 +244,29 @@ export function decodeAgentRecord(value: unknown): LocalAgentRecord {
     contextSignature: optionalString(record?.contextSignature),
     workItemId: optionalString(record?.workItemId),
     progress: decodeAgentProgress(record?.progress),
+    recoveryType: record?.recoveryType === "fresh_thread_handoff" ? record.recoveryType : undefined,
+    parentProviderSessionId: optionalString(record?.parentProviderSessionId),
+    controlState: decodeControlState(record?.controlState),
+    providerTurnId: optionalString(record?.providerTurnId),
+    controlRevision: requiredInteger(record?.controlRevision, "controlRevision"),
   };
 }
 
 export function decodeAgentRecordList(value: unknown): LocalAgentRecord[] {
   if (!Array.isArray(value)) throw new LocalAgentDaemonProtocolError("INVALID_RESULT", "Daemon returned an invalid agent list.");
   return value.map(decodeAgentRecord);
+}
+
+export function decodeAgentControlReceipt(value: unknown): LocalAgentControlReceipt {
+  const record = asRecord(value);
+  const action = requiredString(record?.action, "action");
+  const controlState = requiredString(record?.controlState, "controlState");
+  if (!["steer", "interrupt", "takeover", "returnControl"].includes(action)
+    || !["devspace_active", "interrupting", "desktop_pending", "desktop_owned", "reconcile_required", "terminal"].includes(controlState)
+    || record?.accepted !== true) throw new LocalAgentDaemonProtocolError("INVALID_RESULT", "Invalid agent control receipt.");
+  return { agentId: requiredString(record.agentId, "agentId"), action: action as LocalAgentControlReceipt["action"], accepted: true,
+    providerThreadId: requiredString(record.providerThreadId, "providerThreadId"), providerTurnId: optionalString(record.providerTurnId),
+    controlState: controlState as LocalAgentControlReceipt["controlState"], controlRevision: requiredInteger(record.controlRevision, "controlRevision") };
 }
 
 export function decodeAgentWaitResults(value: unknown): LocalAgentWaitResult[] {
@@ -364,6 +387,26 @@ function decodeContinueInput(value: unknown): { id: string; prompt: string; scop
       resources: decodeResources(overrides.resources),
     } } : {}),
   };
+}
+
+function decodeControlInput(value: unknown): LocalAgentControlInput {
+  const record = asRecord(value);
+  const action = requiredString(record?.action, "action");
+  if (!["steer", "interrupt", "takeover", "returnControl"].includes(action)) {
+    throw new LocalAgentDaemonProtocolError("INVALID_PARAMS", "Invalid agent control action.");
+  }
+  return { agentId: requiredString(record?.agentId, "agentId"), action: action as LocalAgentControlInput["action"],
+    workRunId: requiredString(record?.workRunId, "workRunId"), requestKey: requiredString(record?.requestKey, "requestKey"),
+    expectedTurnId: optionalString(record?.expectedTurnId), prompt: optionalContentString(record?.prompt),
+    scope: decodeWorkspaceScope(record?.scope) };
+}
+
+function decodeControlState(value: unknown): LocalAgentRecord["controlState"] {
+  const state = requiredString(value, "controlState");
+  if (!["devspace_active", "interrupting", "desktop_pending", "desktop_owned", "reconcile_required", "terminal"].includes(state)) {
+    throw new LocalAgentDaemonProtocolError("INVALID_RECORD", "Invalid agent control state.");
+  }
+  return state as LocalAgentRecord["controlState"];
 }
 
 function decodeWorkspaceScope(value: unknown): LocalAgentWorkspaceScope {

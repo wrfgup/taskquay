@@ -1,5 +1,6 @@
 import type { LocalAgentCatalog } from "./local-agent-catalog.js";
 import type { LocalAgentRecord, LocalAgentStatus } from "./local-agent-store.js";
+import { desktopThreadLink } from "./codex-desktop-open.js";
 
 export type AgentCommandStatus = "queued" | "running" | "completed" | "failed" | "stopped";
 
@@ -88,6 +89,14 @@ export function agentControlState(record: LocalAgentRecord, workspaceId: string,
   return {
     providerThreadId: record.providerSessionId && /^[a-fA-F0-9-]{36}$/.test(record.providerSessionId)
       ? record.providerSessionId : undefined,
+    desktopThreadUrl: record.providerSessionId && /^[A-Za-z0-9][A-Za-z0-9_-]{7,255}$/.test(record.providerSessionId)
+      ? desktopThreadLink(record.providerSessionId) : undefined,
+    control: { state: record.controlState, providerTurnId: record.providerTurnId,
+      revision: record.controlRevision,
+      writer: record.controlState === "desktop_owned" ? "codex_desktop"
+        : record.controlState === "devspace_active" || record.controlState === "interrupting" || record.controlState === "desktop_pending"
+          ? "devspace" : null,
+      actions: record.controlState === "devspace_active" && record.providerTurnId ? ["steer", "interrupt"] : [] },
     progress: { phase: running ? p?.phase ?? (record.status === "queued" ? "queued" : "unknown") : "finished",
       toolCategory: running ? p?.toolCategory : undefined,
       lastActivityAt: p?.lastActivityAt ?? null, elapsedMs: elapsed(p?.startedAt), runtimeMs: elapsed(p?.admittedAt),

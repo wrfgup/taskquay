@@ -9,8 +9,9 @@ interface Usage { usageStatus: Quality; codexUsage: Counts | null; missingExecut
 interface Receipt extends Usage { workRunId: string; projectId: string; title: string; executionStatus: string; acceptanceStatus: string; origin: Origin;
   codexThreads: number; receiptRevision: number; createdAt?: string; finishedAt?: string }
 interface Project extends Usage { id: string; name: string; root: string; taskCount: number; activeTasks: number; pendingAcceptance: number; needsAttention: number }
-interface Thread { id: string; title: string; agentId: string; origin: Origin; createdHere: boolean; identityVerified: boolean;
-  externalActivity: boolean; protected: boolean; archiveState: string; nameStatus: string; updatedAt: string; runs: { id: string; status: string; acceptance: string }[] }
+interface Thread { id: string; title: string; agentId: string; providerThreadId: string; desktopThreadUrl: string; origin: Origin; createdHere: boolean; identityVerified: boolean;
+  externalActivity: boolean; protected: boolean; archiveState: string; nameStatus: string; updatedAt: string; runs: { id: string; status: string; acceptance: string }[];
+  control?: { state: string; providerTurnId?: string; revision: number; events: { sequence: number; eventType: string; state: string; createdAt: string }[] } }
 interface Batch { batchId: string; projectId: string; mode: "archive" | "restore"; status: string; confirmationHash: string; expiresAt: string;
   acceptPartial: boolean; readyCount: number; succeededCount: number; entries: { managedThreadId: string; title: string; status: string; reason: string | null }[] }
 type Detail = Receipt & { summary: string; evidence: { label: string; reference: string; outcome: string }[];
@@ -19,7 +20,8 @@ type Detail = Receipt & { summary: string; evidence: { label: string; reference:
 const sourceLabels: Record<string, string> = { chatgpt_mcp: "ChatGPT → DevSpace", other_mcp: "MCP 主控 → DevSpace", devspace_cli: "DevSpace CLI", console: "管理台", legacy_unknown: "历史来源待确认" };
 const states: Record<string, string> = { running: "执行中", queued: "排队中", completed: "执行完成", failed: "失败", cancelled: "已取消", reconciliation_required: "待核对",
   passed: "验收通过", pending: "待验收", not_applicable: "无需验收", active: "未归档", archived: "已归档", unknown: "状态未知",
-  archiving: "归档中", restoring: "恢复中", planned: "待确认", executing: "处理中", succeeded: "成功", partial: "部分完成", ready: "可执行", skipped: "已跳过" };
+  archiving: "归档中", restoring: "恢复中", planned: "待确认", executing: "处理中", succeeded: "成功", partial: "部分完成", ready: "可执行", skipped: "已跳过",
+  devspace_active: "DevSpace 控制中", interrupting: "正在中断", desktop_pending: "等待 Desktop 接管", desktop_owned: "Desktop 已接管", terminal: "当前无活动轮次" };
 const qualities: Record<Quality, string> = { complete: "统计完整", partial: "部分已记录", unavailable: "用量未知", not_used: "未调用 Codex" };
 const reasons: Record<string, string> = {
   preview_budget_exhausted: "本次预览时间预算已用完，请缩小所选批次后重新预览",
@@ -126,6 +128,20 @@ function ConsoleApp() {
     setMessage(result.status === "reconciliation_required" ? "部分结果需要核对，未盲目重试。批次记录已保存。" : "批次执行结果已保存，任务和用量历史保持不变。");
     await refresh();
   });
+  const controlThread = (thread: Thread, action: "steer" | "interrupt" | "takeover" | "returnControl") => {
+    const run = thread.runs.find((entry) => entry.status === "running") ?? thread.runs[0];
+    if (!run) { setError("该会话没有可验证的工作运行，不能发送控制请求。"); return; }
+    const prompt = action === "steer" ? window.prompt("输入要追加到当前轮次的新方向。内容会发送给当前 Codex turn。")?.trim() : undefined;
+    if (action === "steer" && !prompt) return;
+    if (action === "takeover" && !window.confirm("接管会先中断当前轮次；只有收到 interrupted 终态后才把写入权交给 Desktop。继续吗？")) return;
+    const requestKey = `console-${action}-${typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`}`;
+    void act(async () => {
+      const result = await api(`projects/${projectId}/threads/${thread.id}/control`, { action, workRunId: run.id, requestKey,
+        ...(thread.control?.providerTurnId ? { expectedTurnId: thread.control.providerTurnId } : {}), ...(prompt ? { prompt } : {}) });
+      setMessage(result.note); await refresh();
+      if (action === "takeover") location.href = result.desktopThreadUrl;
+    });
+  };
 
   if (boot) return <main className="boot" aria-busy="true">正在连接 DevSpace…</main>;
   if (!csrf) return <main className="login-page"><section className="login-card">
@@ -171,9 +187,13 @@ function ConsoleApp() {
       {tab === "sessions" && <>
         <div className="session-note"><span>◇</span><div><strong>只整理能证明归属的会话</strong><p>Codex 归档会隐藏原聊天，不删除任务或 Token 历史；它也不会取消进程。存在外部续写或未验收任务时，默认跳过。</p></div></div>
         <div className="toolbar session-toolbar"><label className="check-label"><input type="checkbox" checked={acceptPartial} onChange={(event) => setAcceptPartial(event.target.checked)} />预览时允许保留不完整用量回执</label><div className="button-row"><button onClick={() => void preview("restore")} disabled={busy}>恢复已归档会话</button><button className="primary" onClick={() => void preview("archive")} disabled={busy}>{selection.size ? `预览归档 ${selection.size} 个会话` : "预览项目归档"}</button></div></div>
-        <section className="table-panel"><div className="panel-title"><h2>受管 Codex 会话</h2><span>{threads.length} 个 · 来源登记，不靠标题猜测</span></div>{!threads.length ? <div className="empty"><h3>没有受管 Codex 会话</h3><p>主控直接读取不创建 Codex 聊天。</p></div> : <div className="table-scroll"><table><thead><tr><th><span className="sr-only">选择</span></th><th>会话 / 归属</th><th>来源可信度</th><th>归档状态</th><th>保留</th></tr></thead><tbody>{threads.map((thread) => <tr key={thread.id}>
+        <section className="table-panel"><div className="panel-title"><h2>受管 Codex 会话</h2><span>{threads.length} 个 · 来源登记，不靠标题猜测</span></div>{!threads.length ? <div className="empty"><h3>没有受管 Codex 会话</h3><p>主控直接读取不创建 Codex 聊天。</p></div> : <div className="table-scroll"><table><thead><tr><th><span className="sr-only">选择</span></th><th>会话 / 归属</th><th>实时控制</th><th>来源可信度</th><th>归档状态</th><th>保留</th></tr></thead><tbody>{threads.map((thread) => <tr key={thread.id}>
           <td><input type="checkbox" aria-label={`选择 ${thread.title}`} checked={selection.has(thread.id)} onChange={(event) => setSelection((current) => { const next = new Set(current); event.target.checked ? next.add(thread.id) : next.delete(thread.id); return next; })} /></td>
           <td><strong className="thread-title">{thread.title}</strong><div className="source-line">{sourceLabels[thread.origin.entryPoint] ?? "来源待确认"} · {thread.runs.length} 个工作执行</div><code>{thread.agentId}</code></td>
+          <td className="control-cell"><Badge value={thread.control?.state ?? "terminal"} /><div className="button-row"><a className="thread-link" href={thread.desktopThreadUrl}>在 Desktop 打开</a>
+            {thread.control?.state === "devspace_active" && <><button onClick={() => controlThread(thread, "steer")} disabled={busy}>转向</button><button onClick={() => controlThread(thread, "interrupt")} disabled={busy}>中断</button><button className="primary" onClick={() => controlThread(thread, "takeover")} disabled={busy}>接管</button></>}
+            {thread.control?.state === "desktop_owned" && <button onClick={() => controlThread(thread, "returnControl")} disabled={busy}>归还 DevSpace</button>}</div>
+            <div className="control-events">{thread.control?.events.slice(-3).map((event) => <span key={event.sequence}>{date(event.createdAt)} · {label(event.state)}</span>)}</div></td>
           <td>{thread.externalActivity ? <Badge value="reconciliation_required">外部续写</Badge> : <Badge value={thread.createdHere && thread.identityVerified ? "passed" : "pending"}>{thread.createdHere && thread.identityVerified ? "已登记创建" : "关联待核实"}</Badge>}</td>
           <td><Badge value={thread.archiveState} /></td><td><button className={thread.protected ? "protect active" : "protect"} onClick={() => void act(async () => { await api(`projects/${projectId}/threads/${thread.id}/protect`, { protected: !thread.protected }); await refresh(); })} disabled={busy}>{thread.protected ? "已保留" : "设为保留"}</button></td></tr>)}</tbody></table></div>}</section>
         <section className="history-panel"><h2>归档与恢复批次</h2>{!history.length ? <p className="subtle">尚无批次。预览和确认会留存独立记录。</p> : history.map((entry) => <button className="history-row" key={entry.id} onClick={() => void act(async () => { setExternalIdle(false); setBatch(await api(`projects/${projectId}/archive/${entry.id}`)); })}><span>{entry.mode === "archive" ? "归档" : "恢复"} · {date(entry.created_at)}</span><Badge value={entry.status} /><span>查看回执 →</span></button>)}</section>

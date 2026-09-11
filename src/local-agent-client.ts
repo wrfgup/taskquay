@@ -23,6 +23,7 @@ import {
 import {
   decodeAgentRecord,
   decodeAgentRecordList,
+  decodeAgentControlReceipt,
   decodeAgentWaitResults,
   decodeDaemonHello,
   decodeDaemonLogs,
@@ -46,6 +47,8 @@ import {
 } from "./local-agent-daemon-lifecycle.js";
 import type {
   AgentContinueError,
+  LocalAgentControlInput,
+  LocalAgentControlReceipt,
   AgentListError,
   AgentLookupError,
   AgentStartError,
@@ -63,7 +66,7 @@ const RETRY_DELAY_MS = 40;
 
 type RequestError<M extends LocalAgentDaemonRequest["method"]> =
   M extends "agent.start" ? AgentStartError | AgentDaemonError
-    : M extends "agent.continue" | "agent.cancelQueued" ? AgentContinueError | AgentDaemonError
+    : M extends "agent.continue" | "agent.cancelQueued" | "agent.control" ? AgentContinueError | AgentDaemonError
       : M extends "agent.get" ? AgentLookupError | AgentDaemonError
         : M extends "agent.list" ? AgentListError | AgentDaemonError
           : M extends "agent.wait" ? AgentWaitError | AgentDaemonError
@@ -127,6 +130,11 @@ export class LocalAgentClient {
       ...(Object.keys(overrides).length > 0 ? { overrides } : {}),
     });
     return decodeRequestResult(result, "agent.continue", decodeAgentRecord);
+  }
+
+  async control(input: LocalAgentControlInput): Promise<BetterResult<LocalAgentControlReceipt, AgentContinueError | AgentDaemonError>> {
+    const result = await this.request("agent.control", input);
+    return decodeRequestResult(result, "agent.control", decodeAgentControlReceipt);
   }
 
   async get(
@@ -496,8 +504,8 @@ export class LocalAgentClient {
 
 function isObservationRequest(
   method: LocalAgentDaemonRequest["method"],
-): method is "agent.get" | "agent.list" | "agent.wait" {
-  return method === "agent.get" || method === "agent.list" || method === "agent.wait";
+): method is "agent.get" | "agent.list" | "agent.wait" | "agent.control" {
+  return method === "agent.get" || method === "agent.list" || method === "agent.wait" || method === "agent.control";
 }
 
 export function createLocalAgentClient(
@@ -704,6 +712,7 @@ function isRequestError(
     case "agent.start":
     case "agent.continue":
     case "agent.cancelQueued":
+    case "agent.control":
       return category === "target"
         || category === "scope"
         || category === "conflict"

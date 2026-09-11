@@ -178,6 +178,35 @@ migrations.push({ version: 15, name: "agent-history-handoff-lineage", up(sqlite)
   addColumnIfMissing(sqlite, "local_agent_sessions", "parent_provider_session_id", "text");
 } });
 migrations.push({ version: 16, name: "local-agent-turns", up: migrateLocalAgentTurns });
+migrations.push({ version: 17, name: "managed-agent-turn-control", up(sqlite) {
+  addColumnIfMissing(sqlite, "local_agent_sessions", "control_state", "text not null default 'terminal'");
+  addColumnIfMissing(sqlite, "local_agent_sessions", "provider_turn_id", "text");
+  addColumnIfMissing(sqlite, "local_agent_sessions", "control_revision", "integer not null default 0");
+  sqlite.exec(`
+    create table if not exists agent_control_requests (
+      agent_id text not null references local_agent_sessions(id) on delete cascade,
+      request_key text not null,
+      request_hash text not null,
+      action text not null,
+      status text not null,
+      receipt text,
+      created_at text not null,
+      updated_at text not null,
+      primary key(agent_id, request_key)
+    );
+    create table if not exists agent_control_events (
+      sequence integer primary key autoincrement,
+      agent_id text not null references local_agent_sessions(id) on delete cascade,
+      event_type text not null,
+      control_state text not null,
+      provider_thread_id text,
+      provider_turn_id text,
+      created_at text not null
+    );
+    create index if not exists agent_control_events_agent_sequence
+      on agent_control_events(agent_id, sequence desc);
+  `);
+} });
 
 function migrateWorkspaceState(sqlite: Database.Database): void {
   sqlite.exec(`

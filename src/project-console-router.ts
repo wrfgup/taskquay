@@ -7,6 +7,9 @@ import { assertAllowedPath } from "./roots.js";
 import { WorkLedger } from "./work-ledger.js";
 import { ProjectArchive } from "./project-archive.js";
 import { CodexThreadControl, type ThreadControl } from "./codex-thread-control.js";
+import { createLocalAgentClient, type LocalAgentClient } from "./local-agent-client.js";
+import { LocalAgentStore } from "./local-agent-store.js";
+import { desktopThreadLink } from "./codex-desktop-open.js";
 
 interface Session { csrf: string; expires: number }
 const hash = (value: string) => createHash("sha256").update(value).digest();
@@ -17,12 +20,14 @@ const stringParam = (value: string | string[] | undefined): string => typeof val
 
 export function createProjectConsoleRouter(config: ServerConfig, options: {
   assetDirectory: string; providerFactory?: () => ThreadControl; clock?: () => number;
+  agentClient?: Pick<LocalAgentClient, "get" | "control">;
 }) {
   const router = express.Router();
   const sessions = new Map<string, Session>();
   const attempts = new Map<string, { count: number; until: number }>();
   const clock = options.clock ?? Date.now;
   const settings = config.console ?? { enabled: true, allowRemote: false, sessionTtlSeconds: 3600 };
+  const agentClient = () => options.agentClient ?? createLocalAgentClient(config);
   const cookieName = "devspace_console_session";
   const sessionFor = (req: Request) => {
     const cookie = req.headers.cookie?.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
@@ -116,12 +121,54 @@ export function createProjectConsoleRouter(config: ServerConfig, options: {
   }));
   router.get("/api/projects/:projectId/runs/:runId", withLedger((req, ledger) => ledger.detail(stringParam(req.params.projectId), stringParam(req.params.runId))));
   router.get("/api/projects/:projectId/threads", withLedger((req, ledger) => ({
-    threads: ledger.threads(stringParam(req.params.projectId)).map((thread) => ({ id: thread.id, title: thread.title,
+    threads: ledger.threads(stringParam(req.params.projectId)).map((thread) => {
+      const store = new LocalAgentStore(config.stateDir);
+      try {
+        const agent = store.getById(thread.agent_id);
+        return { id: thread.id, title: thread.title,
       agentId: thread.agent_id, instanceId: thread.instance_id, createdHere: Boolean(thread.created_here),
       origin: JSON.parse(thread.origin), identityVerified: Boolean(thread.identity_verified), externalActivity: Boolean(thread.external_activity),
       protected: Boolean(thread.protected), archiveState: thread.archive_state, nameStatus: thread.name_status,
-      updatedAt: thread.updated_at, runs: ledger.threadRuns(thread.id).map((run) => ({ id: run.id, status: run.status, acceptance: run.acceptance })) })),
+      providerThreadId: thread.thread_id, desktopThreadUrl: desktopThreadLink(thread.thread_id),
+      control: agent ? { state: agent.controlState, providerTurnId: agent.providerTurnId, revision: agent.controlRevision,
+        events: store.controlEvents(agent.id) } : undefined,
+      updatedAt: thread.updated_at, runs: ledger.threadRuns(thread.id).map((run) => ({ id: run.id, status: run.status, acceptance: run.acceptance })) };
+      } finally { store.close(); }
+    }),
     catalogScope: "Only DevSpace registrations. Unmanaged chats are not collected or archived by this page." })));
+  router.post("/api/projects/:projectId/threads/:threadId/control", withLedger(async (req, ledger) => {
+    const body = z.object({ action: z.enum(["steer", "interrupt", "takeover", "returnControl"]),
+      workRunId: z.string().min(1), requestKey: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/),
+      expectedTurnId: z.string().min(1).max(256).optional(), prompt: z.string().min(1).max(12_000).optional() }).strict().parse(req.body);
+    const projectId = stringParam(req.params.projectId); const managedThreadId = stringParam(req.params.threadId);
+    const project = ledger.getProject(projectId);
+    const thread = ledger.thread(managedThreadId);
+    if (thread.project_id !== projectId) throw new Error("Thread belongs to a different project.");
+    const store = new LocalAgentStore(config.stateDir);
+    try {
+      const agent = store.getById(thread.agent_id);
+      if (!agent || agent.providerSessionId !== thread.thread_id) throw new Error("Managed agent/thread identity is unavailable.");
+      const scope = { workspaceId: agent.workspaceId, workspaceRoot: project.root };
+      ledger.requireScope(body.workRunId, project.root, agent.workspaceId);
+      if (body.action === "returnControl") {
+        const provider = options.providerFactory?.() ?? new CodexThreadControl();
+        try {
+          const snapshot = await provider.inspect(thread.thread_id);
+          if (!snapshot.identityVerified || snapshot.instanceId !== thread.instance_id || resolve(snapshot.cwd) !== resolve(project.root)
+            || !snapshot.turnsClosed || !["idle", "notLoaded"].includes(snapshot.status)) {
+            throw new Error("Provider thread is active, external, or has an unverified identity.");
+          }
+        } finally { await provider.close(); }
+      }
+      const result = await agentClient().control({ agentId: agent.id, action: body.action, workRunId: body.workRunId,
+        requestKey: body.requestKey, expectedTurnId: body.expectedTurnId, prompt: body.prompt, scope });
+      if (result.isErr()) throw result.error;
+      return { ...result.value, desktopThreadUrl: desktopThreadLink(thread.thread_id),
+        note: body.action === "takeover" ? "DevSpace confirmed interruption and released the single-writer lease to Codex Desktop."
+          : body.action === "returnControl" ? "Provider identity and idle state were verified before returning control to DevSpace."
+          : "Control request was applied to the exact active provider turn." };
+    } finally { store.close(); }
+  }));
   router.post("/api/projects/:projectId/threads/:threadId/protect", withLedger((req, ledger) => {
     const body = z.object({ protected: z.boolean() }).strict().parse(req.body);
     ledger.protectThread(stringParam(req.params.projectId), stringParam(req.params.threadId), body.protected); return { saved: true };

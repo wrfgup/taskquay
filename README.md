@@ -161,6 +161,8 @@ node bin/devspace.js serve
 
 `progress` 仅包含固定阶段/工具类别、最后活动时间、时长和等待原因；构建/测试类别是 provider 事件提示，静默不等于卡死，未知数据保留未知。默认不输出命令、stdout 或模型思维。`nextAction` 指示继续观察、检查 claim 或由主控审核结果；任务完成不会自动通过验收，主控仍须显式结算 `work_task`。
 
+Codex 的 active turn 支持显式 `agent_task steer` 与 `interrupt`。两者必须带同一 `workspace_id`、`work_run_id`、`agent_id`、新的 `request_key` 和 `observe` 返回的 `expected_turn_id`；`steer` 另带本次新方向 `prompt`。DevSpace 只在拥有该 turn 的原 app-server 连接上调用控制 RPC，stale turn、断线未知结果或作用域不符不会 fallback 或自动重放。`/console/` 可显示同一 thread 的脱敏事件，并由 owner 执行中断后接管；Desktop 所有权期间远端续写被拒绝。
+
 队列和 busy continue 不启动额外推理、不抢写锁、不自动重放写入。收到冲突先按返回的 `nextAction` 核对 owner/claim；相关续接在终态后使用新的 `request_key`。广告中的 `~/…/SKILL.md` 与绝对路径可用于 `read` 和 `workspace_context capture`，仅允许已加载技能及其目录资源，并检查真实路径越界。外部技能 capture 作为阅读证据返回，不混入仅接受工作区源码的 delegation refs。
 
 这些改进需主控在现有发布任务停稳后安全启用新的 server 与 agentd；源码修改或 staging 构建成功不代表线上已更新。实测数据、缺失证据和运行路径见[执行可靠性 trace 复盘](docs/execution-reliability-trace.zh-CN.md)。
@@ -168,6 +170,8 @@ node bin/devspace.js serve
 ## 项目任务台与用量
 
 管理台默认地址是 `http://127.0.0.1:7676/console/`，使用 owner 口令建立独立浏览器会话。远程访问需要单独开启，不因 MCP 接通而自动开放。[任务台说明](docs/project-console.md)
+
+管理台中的“在 Desktop 打开”使用 `codex://threads/<thread-id>` 打开原受管 thread，不创建副本。可靠实时视图是管理台；Codex Desktop 原生聊天窗由独立客户端连接负责，DevSpace 不宣称能把另一条 app-server 连接上的逐 token 事件强制注入其中。
 
 | 统计状态 | 含义 |
 | --- | --- |

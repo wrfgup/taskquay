@@ -18,6 +18,8 @@ const record: LocalAgentRecord = {
   effort: "high",
   providerSessionId: "provider_private",
   status: "running",
+  controlState: "devspace_active",
+  controlRevision: 1,
   latestResponse: "previous response",
   createdAt: "2026-08-21T10:00:00.000Z",
   updatedAt: "2026-08-21T10:01:00.000Z",

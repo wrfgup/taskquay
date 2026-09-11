@@ -8,6 +8,16 @@ import { decodeAgentProgress, type AgentActivity, type AgentProgress } from "./a
 
 export type LocalAgentStatus = "starting" | "queued" | "running" | "idle" | "error" | "stopped";
 export type LocalAgentTurnStatus = "running" | "completed" | "failed" | "stopped";
+export type AgentControlState = "devspace_active" | "interrupting" | "desktop_pending" | "desktop_owned" | "reconcile_required" | "terminal";
+
+export interface AgentControlEvent {
+  sequence: number;
+  eventType: string;
+  state: AgentControlState;
+  providerThreadId?: string;
+  providerTurnId?: string;
+  createdAt: string;
+}
 
 export interface LocalAgentRecord {
   progress?: AgentProgress;
@@ -31,6 +41,9 @@ export interface LocalAgentRecord {
   workItemId?: string;
   recoveryType?: "fresh_thread_handoff";
   parentProviderSessionId?: string;
+  controlState: AgentControlState;
+  providerTurnId?: string;
+  controlRevision: number;
 }
 
 export interface CreateLocalAgentRecordInput {
@@ -106,6 +119,9 @@ interface LocalAgentRow {
   work_item_id: string | null;
   recovery_type: string | null;
   parent_provider_session_id: string | null;
+  control_state: string;
+  provider_turn_id: string | null;
+  control_revision: number;
 }
 
 interface LocalAgentTurnRow {
@@ -133,6 +149,54 @@ export class LocalAgentStore {
   }
 
   usage(agentId: string) { return readAgentUsage(this.database.sqlite, agentId); }
+
+  controlEvents(agentId: string, limit = 40): AgentControlEvent[] {
+    const rows = this.database.sqlite.prepare(`select sequence,event_type,control_state,provider_thread_id,provider_turn_id,created_at
+      from agent_control_events where agent_id=? order by sequence desc limit ?`).all(agentId, Math.max(1, Math.min(100, limit))) as Array<{
+        sequence: number; event_type: string; control_state: string; provider_thread_id: string | null; provider_turn_id: string | null; created_at: string;
+      }>;
+    return rows.reverse().map((row) => ({ sequence: row.sequence, eventType: row.event_type,
+      state: readControlState(row.control_state), providerThreadId: row.provider_thread_id ?? undefined,
+      providerTurnId: row.provider_turn_id ?? undefined, createdAt: row.created_at }));
+  }
+
+  setControlState(agentId: string, state: AgentControlState, providerTurnId: string | null, eventType: string): LocalAgentRecord {
+    return this.database.sqlite.transaction(() => {
+      const current = this.getById(agentId);
+      if (!current) throw new Error(`Unknown subagent id: ${agentId}`);
+      const now = new Date().toISOString();
+      this.database.sqlite.prepare(`update local_agent_sessions set control_state=?,provider_turn_id=?,control_revision=control_revision+1,updated_at=? where id=?`)
+        .run(state, providerTurnId, now, agentId);
+      this.database.sqlite.prepare(`insert into agent_control_events(agent_id,event_type,control_state,provider_thread_id,provider_turn_id,created_at)
+        values(?,?,?,?,?,?)`).run(agentId, eventType, state, current.providerSessionId ?? null, providerTurnId, now);
+      return this.getById(agentId)!;
+    }).immediate();
+  }
+
+  reserveControlRequest(agentId: string, requestKey: string, requestHash: string, action: string): unknown | undefined {
+    return this.database.sqlite.transaction(() => {
+      const old = this.database.sqlite.prepare(`select request_hash,status,receipt from agent_control_requests where agent_id=? and request_key=?`)
+        .get(agentId, requestKey) as { request_hash: string; status: string; receipt: string | null } | undefined;
+      if (old) {
+        if (old.request_hash !== requestHash) throw new AgentConflictError({ code: "AGENT_CONFLICT", agentId,
+          operation: "control_identity", retryable: false, message: "Control request key already belongs to a different request." });
+        if (old.status === "completed" && old.receipt) return JSON.parse(old.receipt);
+        if (old.status === "rejected") throw new AgentConflictError({ code: "AGENT_CONFLICT", agentId,
+          operation: "control_rejected", retryable: false, message: "The prior control request was rejected and will not be replayed." });
+        throw new AgentConflictError({ code: "AGENT_CONFLICT", agentId, operation: "control_reconciliation", retryable: false,
+          message: "The prior control request has no confirmed result. Reconcile the active turn; it will not be replayed automatically." });
+      }
+      const now = new Date().toISOString();
+      this.database.sqlite.prepare(`insert into agent_control_requests(agent_id,request_key,request_hash,action,status,created_at,updated_at)
+        values(?,?,?,?,?,?,?)`).run(agentId, requestKey, requestHash, action, "pending", now, now);
+      return undefined;
+    }).immediate();
+  }
+
+  completeControlRequest(agentId: string, requestKey: string, receipt: unknown, status: "completed" | "rejected" | "reconcile_required" = "completed"): void {
+    this.database.sqlite.prepare(`update agent_control_requests set status=?,receipt=?,updated_at=? where agent_id=? and request_key=?`)
+      .run(status, JSON.stringify(receipt), new Date().toISOString(), agentId, requestKey);
+  }
 
   recordActivityResult(agentId: string, activity: AgentActivity): BetterResult<void, AgentStoreError> {
     return storeResult("activity", () => {
@@ -199,6 +263,8 @@ export class LocalAgentStore {
       model: input.model,
       effort: input.effort,
       status: "starting",
+      controlState: "terminal",
+      controlRevision: 0,
       createdAt: now,
       updatedAt: now,
     };
@@ -267,6 +333,11 @@ export class LocalAgentStore {
             .get(resolve(input.workspaceRoot), input.workspaceId ?? "", input.profileName, input.workItemId,
               input.contextKey, input.contextSignature) as LocalAgentRow | undefined;
           if (found) {
+            if (["desktop_owned", "reconcile_required"].includes(found.control_state)) throw new AgentConflictError({
+              code: "AGENT_CONFLICT", agentId: found.id, operation: "control_owner", retryable: false,
+              message: found.control_state === "desktop_owned"
+                ? "Codex Desktop owns the related thread; return control before starting related work."
+                : "The related thread requires control reconciliation before reuse." });
             if (!["idle", "error", "stopped"].includes(found.status)) throw new AgentConflictError({ code: "AGENT_CONFLICT", agentId: found.id,
               operation: "context_affinity", retryable: true,
               message: "The related session is occupied. Observe it, then continue; do not create another copy of its context." });
@@ -384,6 +455,9 @@ export class LocalAgentStore {
           work_item_id = ?,
           recovery_type = ?,
           parent_provider_session_id = ?,
+          control_state = ?,
+          provider_turn_id = ?,
+          control_revision = ?,
           updated_at = ?,
           progress = ?
          where id = ?`,
@@ -406,6 +480,9 @@ export class LocalAgentStore {
         updated.workItemId ?? null,
         updated.recoveryType ?? null,
         updated.parentProviderSessionId ?? null,
+        updated.controlState,
+        updated.providerTurnId ?? null,
+        updated.controlRevision,
         updated.updatedAt,
         updated.progress ? JSON.stringify(decodeAgentProgress(updated.progress)) : null,
         updated.id,
@@ -564,6 +641,9 @@ export class LocalAgentStore {
   reconcileActiveRuns(message = "DevSpace restarted while this agent turn was running."): number {
     return this.database.sqlite.transaction(() => {
       const now = new Date().toISOString();
+      this.database.sqlite.prepare(`update local_agent_sessions
+        set control_state='reconcile_required', control_revision=control_revision+1, updated_at=?
+        where control_state in ('devspace_active','interrupting','desktop_pending')`).run(now);
       this.database.sqlite
         .prepare(
           `update local_agent_turns
@@ -622,7 +702,17 @@ function rowToLocalAgentRecord(row: LocalAgentRow): LocalAgentRecord {
     workItemId: row.work_item_id ?? undefined,
     recoveryType: row.recovery_type === "fresh_thread_handoff" ? row.recovery_type : undefined,
     parentProviderSessionId: row.parent_provider_session_id ?? undefined,
+    controlState: readControlState(row.control_state),
+    providerTurnId: row.provider_turn_id ?? undefined,
+    controlRevision: row.control_revision,
   };
+}
+
+function readControlState(value: string): AgentControlState {
+  if (["devspace_active", "interrupting", "desktop_pending", "desktop_owned", "reconcile_required", "terminal"].includes(value)) {
+    return value as AgentControlState;
+  }
+  return "reconcile_required";
 }
 
 function rowToLocalAgentTurnRecord(row: LocalAgentTurnRow): LocalAgentTurnRecord {

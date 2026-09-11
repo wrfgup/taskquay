@@ -31,7 +31,9 @@ const record: LocalAgentRecord = {
   workspaceRoot: join(root, "project"),
   profileName: "reviewer",
   provider: "codex",
-  status: "running",
+      status: "running",
+      controlState: "devspace_active",
+      controlRevision: 1,
   createdAt: "now",
   updatedAt: "now",
 };

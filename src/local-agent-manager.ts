@@ -34,6 +34,7 @@ import {
   type LocalAgentRunCallbacks,
   type LocalAgentRunInput,
   type LocalAgentRuntimeContext,
+  type LocalAgentTurnControl,
   type LocalAgentWriteMode,
 } from "./local-agent-runtime.js";
 import { LocalAgentRuntimePool } from "./local-agent-runtime-pool.js";
@@ -90,6 +91,25 @@ export type AgentContinueError = AgentStartError;
 export type AgentLookupError = AgentTargetError | AgentScopeError | AgentStoreError;
 export type AgentListError = AgentScopeError | AgentStoreError;
 export type AgentWaitError = AgentLookupError;
+export type AgentControlAction = "steer" | "interrupt" | "takeover" | "returnControl";
+export interface LocalAgentControlInput {
+  agentId: string;
+  action: AgentControlAction;
+  workRunId: string;
+  requestKey: string;
+  expectedTurnId?: string;
+  prompt?: string;
+  scope: LocalAgentWorkspaceScope;
+}
+export interface LocalAgentControlReceipt {
+  agentId: string;
+  action: AgentControlAction;
+  accepted: true;
+  providerThreadId: string;
+  providerTurnId?: string;
+  controlState: LocalAgentRecord["controlState"];
+  controlRevision: number;
+}
 
 export type LocalAgentWaitResult =
   | { id: string; status: "running"; wait?: "timeout" }
@@ -100,6 +120,8 @@ export type LocalAgentWaitResult =
 interface ActiveLocalAgentTurn {
   turnId: number;
   completion: Promise<void>;
+  workRunId: string;
+  control?: LocalAgentTurnControl;
 }
 
 /**
@@ -250,6 +272,12 @@ export class LocalAgentManager {
       const record = yield* manager.store.getByIdResult(agentId);
       if (!record) return Result.err(agentNotFound(agentId));
       yield* manager.agentWorkspaceResult(record, scope, "continue");
+      if (record.controlState === "desktop_owned" || record.controlState === "reconcile_required") {
+        return Result.err(new AgentConflictError({ code: "AGENT_CONFLICT", agentId: record.id, operation: "control_owner",
+          retryable: false, message: record.controlState === "desktop_owned"
+            ? "Codex Desktop owns this thread. Return control from the local project console before continuing."
+            : "Thread control requires reconciliation before another provider request." }));
+      }
       const profiles = yield* Result.await(manager.loadProfilesResult(record.workspaceRoot, record.profileName));
       yield* manager.profileForRecordResult(record, profiles);
       yield* manager.providerEnabledResult(record.provider, record.profileName, "continue");
@@ -395,6 +423,81 @@ export class LocalAgentManager {
       error: "Queued task cancelled before provider invocation.", errorCode: "PROVIDER_CANCELLED", errorRetryable: false });
   }
 
+  async control(input: LocalAgentControlInput): Promise<BetterResult<LocalAgentControlReceipt, AgentContinueError>> {
+    const found = this.get(input.agentId, input.scope);
+    if (found.isErr()) return found;
+    const record = found.value;
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(input.requestKey)) return Result.err(new AgentTargetError({
+      code: "TARGET_RESOLUTION_FAILED", target: record.profileName, retryable: false, message: "Invalid control request key.",
+    }));
+    try { this.ledger.requireScope(input.workRunId, record.workspaceRoot, input.scope.workspaceId); }
+    catch (cause) { return Result.err(new AgentScopeError({ code: "WORKSPACE_MISMATCH", agentId: record.id,
+      workspaceId: input.scope.workspaceId, operation: "control", retryable: false, cause,
+      message: "Control request belongs to a different work run or workspace." })); }
+    const requestHash = createHash("sha256").update(JSON.stringify([input.action, input.workRunId,
+      input.expectedTurnId, input.prompt])).digest("hex");
+    let replay: unknown;
+    try { replay = this.store.reserveControlRequest(record.id, input.requestKey, requestHash, input.action); }
+    catch (error) { return Result.err(AgentConflictError.is(error) ? error : new AgentStoreError("control_identity", error)); }
+    if (replay) return Result.ok(replay as LocalAgentControlReceipt);
+
+    if (input.action === "returnControl") {
+      if (record.controlState !== "desktop_owned" || this.activeTurns.has(record.id) || !record.providerSessionId) {
+        return this.failControl(input, record, "Desktop ownership cannot be returned while provider identity or active-turn state is unconfirmed.");
+      }
+      const updated = this.store.setControlState(record.id, "terminal", null, "control_returned");
+      const receipt = controlReceipt(updated, input.action);
+      this.store.completeControlRequest(record.id, input.requestKey, receipt);
+      return Result.ok(receipt);
+    }
+
+    const active = this.activeTurns.get(record.id);
+    const control = active?.control;
+    if (!active || active.workRunId !== input.workRunId || !control || !control.isAlive()
+      || control.providerThreadId !== record.providerSessionId || control.providerTurnId !== input.expectedTurnId
+      || record.controlState === "desktop_owned" || record.controlState === "reconcile_required") {
+      return this.failControl(input, record, "The requested provider turn is not the exact active DevSpace-owned turn. Refresh before controlling it.");
+    }
+    if (input.action === "steer" && !input.prompt?.trim()) {
+      return this.failControl(input, record, "Steering requires a non-empty new direction.");
+    }
+    try {
+      if (input.action === "steer") {
+        const accepted = await control.steer(input.prompt!);
+        if (accepted.turnId !== control.providerTurnId) throw new Error("Provider returned a different turn identity.");
+        const updated = this.store.setControlState(record.id, "devspace_active", control.providerTurnId, "steer_accepted");
+        const receipt = controlReceipt(updated, input.action, control.providerTurnId);
+        this.store.completeControlRequest(record.id, input.requestKey, receipt);
+        return Result.ok(receipt);
+      }
+      this.store.setControlState(record.id, input.action === "takeover" ? "desktop_pending" : "interrupting",
+        control.providerTurnId, input.action === "takeover" ? "takeover_requested" : "interrupt_requested");
+      await control.interrupt();
+      const timedOut = await waitForTurns([active.completion], 30_000, undefined);
+      if (timedOut) throw new Error("Provider acknowledged interruption but did not confirm turn completion in time.");
+      const current = this.store.getById(record.id);
+      if (!current) throw new Error("Agent disappeared after interruption.");
+      const updated = this.store.setControlState(record.id, input.action === "takeover" ? "desktop_owned" : "terminal",
+        null, input.action === "takeover" ? "desktop_ownership_granted" : "interrupt_completed");
+      const receipt = controlReceipt(updated, input.action, control.providerTurnId);
+      this.store.completeControlRequest(record.id, input.requestKey, receipt);
+      return Result.ok(receipt);
+    } catch (error) {
+      void error;
+      const current = this.store.setControlState(record.id, "reconcile_required", control.providerTurnId, "control_result_unknown");
+      const receipt = { ...controlReceipt(current, input.action, control.providerTurnId), accepted: false, message: "Control result is unconfirmed; do not replay it automatically." };
+      this.store.completeControlRequest(record.id, input.requestKey, receipt, "reconcile_required");
+      return Result.err(new AgentConflictError({ code: "AGENT_CONFLICT", agentId: record.id, operation: "control_reconciliation",
+        retryable: false, message: "Control result is unconfirmed. Reconcile the exact provider turn before further writes." }));
+    }
+  }
+
+  private failControl(input: LocalAgentControlInput, record: LocalAgentRecord, message: string): BetterResult<never, AgentConflictError> {
+    this.store.completeControlRequest(record.id, input.requestKey, { accepted: false, action: input.action, message }, "rejected");
+    return Result.err(new AgentConflictError({ code: "AGENT_CONFLICT", agentId: record.id,
+      operation: "control", retryable: false, message }));
+  }
+
   private begin(
     record: LocalAgentRecord,
     prompt: string,
@@ -402,6 +505,12 @@ export class LocalAgentManager {
     workspaceId?: string,
     defaults?: { model?: string; effort?: string },
   ): BetterResult<LocalAgentRecord, AgentConflictError | AgentStoreError | AgentTargetError> {
+    if (record.controlState === "desktop_owned" || record.controlState === "reconcile_required") {
+      return Result.err(new AgentConflictError({ code: "AGENT_CONFLICT", agentId: record.id, operation: "control_owner",
+        retryable: false, message: record.controlState === "desktop_owned"
+          ? "Codex Desktop owns this thread. Return control from the local project console before continuing."
+          : "Thread control requires reconciliation before another provider request." }));
+    }
     if (this.activeTurns.has(record.id)) {
       return Result.err(new AgentConflictError({
         code: "AGENT_CONFLICT",
@@ -527,10 +636,15 @@ export class LocalAgentManager {
         this.ledger.endExecution(executionId, terminal === "idle" ? "completed" : terminal === "stopped" ? "cancelled" : "failed");
       } finally {
         this.queuedTurns.delete(record.id);
+        const current = this.store.getById(record.id);
+        if (current && ["devspace_active", "interrupting", "desktop_pending"].includes(current.controlState)) {
+          this.store.setControlState(record.id, "terminal", null, "turn_finished");
+        }
         ticket?.cancel(); claim?.release(); this.activeTurns.delete(record.id);
       }
     });
-    this.activeTurns.set(record.id, { turnId: begun.value.turn.id, completion: turn });
+    const ownedWorkRunId = this.ledger.execution(executionId).run_id;
+    this.activeTurns.set(record.id, { turnId: begun.value.turn.id, completion: turn, workRunId: ownedWorkRunId });
     void turn.catch(() => undefined);
     return Result.ok(updated.value);
   }
@@ -611,6 +725,14 @@ export class LocalAgentManager {
         onNameResult: executionId ? (success) => { this.ledger.nameResult(executionId, success); } : undefined,
         onRequest: executionId ? () => { this.ledger.requestStarted(executionId); } : undefined,
         onTurnStarted: executionId ? (turnId) => { this.ledger.turnStarted(executionId, turnId); } : undefined,
+        onControlReady: (control) => {
+          const active = this.activeTurns.get(record.id);
+          if (!active || active.turnId !== turnId || active.workRunId !== this.ledger.execution(executionId!).run_id) {
+            throw new Error("Active turn ownership changed before provider control became ready.");
+          }
+          active.control = control;
+          this.store.setControlState(record.id, "devspace_active", control.providerTurnId, "turn_control_ready");
+        },
         onProviderFinished: executionId ? () => { this.ledger.providerFinished(executionId); } : undefined,
         onUsage: (usage) => {
           const saved = this.store.recordUsageResult(record.id, usage);
@@ -1039,4 +1161,11 @@ function turnFailure(turn: LocalAgentTurnRecord): { code: string; message: strin
     message: turn.error ?? "Subagent failed without an error message.",
     retryable: turn.errorRetryable ?? false,
   };
+}
+
+function controlReceipt(record: LocalAgentRecord, action: AgentControlAction, providerTurnId = record.providerTurnId): LocalAgentControlReceipt {
+  if (!record.providerSessionId) throw new Error("Managed provider thread identity is unavailable.");
+  return { agentId: record.id, action, accepted: true, providerThreadId: record.providerSessionId,
+    ...(providerTurnId ? { providerTurnId } : {}),
+    controlState: record.controlState, controlRevision: record.controlRevision };
 }

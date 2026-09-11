@@ -11,7 +11,7 @@ import { hostOrigin, registeredClientLabel } from "./work-task.js";
 import { jsonReply, textPage } from "../bounded-reply.js";
 import { toAgentErrorPayload, type LocalAgentError } from "../local-agent-errors.js";
 
-type AgentClient = Pick<LocalAgentClient, "start" | "continue" | "get" | "list"> & Partial<Pick<LocalAgentClient, "cancelQueued">>;
+type AgentClient = Pick<LocalAgentClient, "start" | "continue" | "get" | "list"> & Partial<Pick<LocalAgentClient, "cancelQueued" | "control">>;
 
 /** A control-plane call must not acquire the shell/checkout claim it is observing. */
 export function registerAgentTaskTool(context: ToolRegistrationContext, client?: AgentClient): void {
@@ -24,7 +24,7 @@ export function registerAgentTaskTool(context: ToolRegistrationContext, client?:
       workspace_id: z.string(),
       response_offset: z.number().int().nonnegative().optional(),
       response_execution_id: z.string().optional().describe("Retrieve a preserved successful execution in this agent's authorized run without inference."),
-      action: z.enum(["start", "continue", "observe", "list", "claims", "usage", "cancelQueued"]),
+      action: z.enum(["start", "continue", "observe", "list", "claims", "usage", "cancelQueued", "steer", "interrupt"]),
       target: z.string().optional(),
       agent_id: z.string().optional(),
       prompt: z.string().min(1).optional(),
@@ -37,6 +37,7 @@ export function registerAgentTaskTool(context: ToolRegistrationContext, client?:
         .describe("Stable problem-domain/role identity across related tasks, not a phase name or source SHA. Requires workItemId; a matching terminal thread (including error/stopped) is resumed with normal provider checks. Different contexts remain separate."),
       fresh_context: z.boolean().optional().describe("Use a separate context for unrelated work or independent acceptance review; do not prewarm idle workers."),
       request_key: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/).optional().describe("Idempotency identity for one continuation, distinct from the session/domain identity."),
+      expected_turn_id: z.string().min(1).max(256).optional().describe("Exact provider turn id returned by observe. Required for steer and interrupt; stale ids fail without fallback."),
       context: z.object({ summary: z.string().max(12_000), files: z.array(z.object({
         path: z.string().min(1).max(1024), sha256: z.string().regex(/^[0-9a-f]{64}$/),
       }).strict()).max(24) }).strict().optional().describe("Host-prepared facts and versioned files from workspace_context. References are checked before invocation, and again after shared-read analysis. No automatic full-file copy."),
@@ -49,7 +50,7 @@ export function registerAgentTaskTool(context: ToolRegistrationContext, client?:
     },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   }, async ({ workspace_id, response_offset, response_execution_id, agent_id, task_key, read_only,
-    work_item_id, work_run_id, context_key, fresh_context, request_key, wait_ms, known_revision,
+    work_item_id, work_run_id, context_key, fresh_context, request_key, expected_turn_id, wait_ms, known_revision,
     include_response, ...rest }, extra) => {
     const input = {
       ...rest,
@@ -64,6 +65,7 @@ export function registerAgentTaskTool(context: ToolRegistrationContext, client?:
       contextKey: context_key,
       freshContext: fresh_context,
       requestKey: request_key,
+      expectedTurnId: expected_turn_id,
       waitMs: wait_ms,
       knownRevision: known_revision,
       includeResponse: include_response,
@@ -108,6 +110,20 @@ export function registerAgentTaskTool(context: ToolRegistrationContext, client?:
       if (authorized.isErr()) return reply({ code: authorized.error.code, message: authorized.error.message }, true);
       const store = new LocalAgentStore(config.stateDir);
       try { return reply(store.usage(authorized.value.id)); } finally { store.close(); }
+    }
+    if (input.action === "steer" || input.action === "interrupt") {
+      if (!input.agentId || !input.workRunId || !input.requestKey || !input.expectedTurnId
+        || (input.action === "steer" && !input.prompt) || !agents.control) {
+        return reply({ code: "INVALID_TASK", action: input.action, requestAccepted: false, providerInvoked: false,
+          missingFields: [!input.agentId && "agentId", !input.workRunId && "workRunId", !input.requestKey && "requestKey",
+            !input.expectedTurnId && "expectedTurnId", input.action === "steer" && !input.prompt && "prompt"].filter(Boolean),
+          nextAction: { action: "correct_input" }, message: "Supply the exact active-turn control fields before submitting this request." }, true);
+      }
+      const result = await agents.control({ agentId: input.agentId, action: input.action, workRunId: input.workRunId,
+        requestKey: input.requestKey, expectedTurnId: input.expectedTurnId, prompt: input.prompt, scope });
+      if (result.isErr()) return failure(result.error);
+      return reply({ ...result.value, nextAction: { tool: "agent_task", action: "observe", workspaceId: workspace.id,
+        agentId: input.agentId, workRunId: input.workRunId, waitMs: 20_000 } });
     }
     const overrides = { model: input.model, effort: input.effort, writeMode: input.readOnly ? "read_only" as const : undefined,
       context: input.context, resources: input.resources, requestKey: input.requestKey, workRunId: input.workRunId };
@@ -166,7 +182,8 @@ export function registerAgentTaskTool(context: ToolRegistrationContext, client?:
         const completionSnapshot = run ? new WorkRunViews(ledger).snapshot(run.id) : undefined;
         const taskRevision = hash([record.id, record.status, record.latestResponse, record.error, record.errorCode, record.errorRetryable,
           execution?.id, execution?.status, run?.id, run?.status, run?.acceptance, run?.evidence, run?.summary, completionSnapshot?.revision]);
-        const progressRevision = hash([record.progress?.phase, record.progress?.toolCategory]);
+        const progressRevision = hash([record.progress?.phase, record.progress?.toolCategory, record.controlState,
+          record.providerTurnId, record.controlRevision]);
         const revision = hash([taskRevision, progressRevision]);
         const running = record.status === "queued" || record.status === "running" || record.status === "starting";
         if (!running || Date.now() >= deadline || (input.knownRevision && revision !== input.knownRevision)) {

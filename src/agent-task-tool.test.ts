@@ -29,6 +29,7 @@ test("native MCP control observes an occupied checkout without shell claims and 
   record = store.update(record.id, { status: "running" });
   const claim = processSessions.executionCoordinator!.acquire({ workspaceRoot: root, kind: "agent", agentId: record.id });
   const starts: StartLocalAgentInput[] = [];
+  const controls: string[] = [];
   let scoped = true;
   const server = new McpServer({ name: "fixture", version: "1" });
   registerAgentTaskTool({ server, processSessions,
@@ -44,6 +45,9 @@ test("native MCP control observes an occupied checkout without shell claims and 
       return scoped ? Result.ok(record) : Result.err(new AgentScopeError({ code: "WORKSPACE_MISMATCH", operation: "get", retryable: false, message: "scope rejected" }));
     },
     list: async () => Result.ok([record]),
+    control: async (input) => { controls.push(input.action); return Result.ok({ agentId: record.id, action: input.action,
+      accepted: true as const, providerThreadId: "thread_control", providerTurnId: "turn_control",
+      controlState: input.action === "steer" ? "devspace_active" as const : "terminal" as const, controlRevision: 2 }); },
   });
   const client = new Client({ name: "fixture-host", version: "1" });
   const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
@@ -61,6 +65,12 @@ test("native MCP control observes an occupied checkout without shell claims and 
   assert.equal(starts.length, 0, "Native work must identify a work item for the context budget");
   await call({ action: "start", target: "codex", prompt: "work", task_key: "task-1", work_item_id: "work-1", read_only: true });
   assert.equal(starts[0]?.taskKey, "task-1"); assert.equal(starts[0]?.writeMode, "read_only");
+  record = store.update(record.id, { status: "running", providerSessionId: "thread_control" });
+  record = store.setControlState(record.id, "devspace_active", "turn_control", "turn_control_ready");
+  assert.equal((await call({ action: "steer", agent_id: record.id, work_run_id: "run-1", request_key: "steer-1", prompt: "focus" })).isError, true);
+  const steer = await call({ action: "steer", agent_id: record.id, work_run_id: "run-1", request_key: "steer-1",
+    expected_turn_id: "turn_control", prompt: "focus" });
+  assert.equal(steer.accepted, true); assert.deepEqual(controls, ["steer"]);
   const initial = await call({ action: "observe", agent_id: record.id, wait_ms: 0 });
   assert.equal(initial.status, "running");
   const unchanged = await call({ action: "observe", agent_id: record.id, wait_ms: 0, known_revision: initial.revision });

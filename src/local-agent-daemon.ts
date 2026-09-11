@@ -36,6 +36,8 @@ import type {
   AgentContinueError,
   AgentListError,
   AgentLookupError,
+  LocalAgentControlInput,
+  LocalAgentControlReceipt,
   AgentStartError,
   AgentWaitError,
   LocalAgentWaitResult,
@@ -56,6 +58,7 @@ export interface LocalAgentDaemonManager {
   get(agentId: string, scope: LocalAgentWorkspaceScope): Result<LocalAgentRecord, AgentLookupError>;
   list(scope: LocalAgentWorkspaceScope): Result<LocalAgentRecord[], AgentListError>;
   cancelQueued?(agentId: string, scope: LocalAgentWorkspaceScope): Result<LocalAgentRecord, AgentContinueError>;
+  control?(input: LocalAgentControlInput): Promise<Result<LocalAgentControlReceipt, AgentContinueError>>;
   wait(
     agentIds: readonly string[],
     scope: LocalAgentWorkspaceScope,
@@ -329,6 +332,9 @@ export class LocalAgentDaemon {
           request.params.overrides,
           request.params.scope,
         ));
+      case "agent.control":
+        if (!this.manager.control) throw new LocalAgentDaemonProtocolError("INVALID_REQUEST", "Active-turn control is unavailable.");
+        return unwrapManagerResult(await this.manager.control(request.params));
       case "agent.get":
         return unwrapManagerResult(this.manager.get(request.params.id, request.params.scope));
       case "agent.cancelQueued":

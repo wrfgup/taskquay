@@ -46,6 +46,14 @@ git diff --check
 
 夹具覆盖原生 paginated resume 成功（含旧版本字符串）、明确不支持时默认拒绝与显式 handoff、未知版本、同 thread identity、quota 不 fallback、重复 `requestKey` 不重复 turn、旧成功回执保留、跨 scope、会话预算和本地 approval policy。源码构建成功不表示 live server 已加载；本提交不 push、不重启、不修改线上配置，因此 handoff 当前未启用。
 
+## 同一 thread 的实时控制补充（2026-09-11）
+
+新增控制不改变上述恢复结论。DevSpace 仅在启动 active turn 的原 app-server 连接上保存不可序列化控制句柄；`steer` 要求精确 `expectedTurnId`，`interrupt` 收到 RPC 回执后仍等待 `turn/completed`。控制 request key、作用域、thread/turn 与单写者状态会持久记录，但 RPC 连接不会从 SQLite 重建。进程重启遗留的活动控制进入 `reconcile_required`，不得自动重发。
+
+Codex Desktop 通过官方 `codex://threads/<thread-id>` 打开同一 thread。管理台是本实现保证的实时显示面；Desktop 原生聊天窗的自动刷新仍是宿主客户端行为，不等同于 DevSpace app-server 订阅。owner 可在管理台中断后显式接管；接管期间远端续写被拒绝。归还前只读核对同实例、同 workspace、终态和 idle/notLoaded，随后新的明确请求才允许走原生 resume；若原生明确拒绝分页历史，仍只使用前述已授权 handoff，不重放旧发布指令。
+
+本补充不修改 approval policy、宿主安全检查、隧道、OAuth 或全局 Codex 配置。源码、daemon 协议 8、数据库迁移 17 和任务台必须一起发布；当前实现阶段未替换 live dist、未重启、未 push，因而线上仍未启用。
+
 ## 重新连接后的实际状态（2026-09-10）
 
 前节记载的是实现阶段，不代表后续全部状态。13:38 UTC 后主控已核对：历史修复 `e06e3b8` 与命令 review 配置 `6f34228` 均已进入当前 `main` 和 `origin/main`；用户配置 `tools.dangerouslySkipCommandReview=true`，`historyHandoff` 仍未启用。宿主安全检查仍可能独立拒绝请求，不能把本地配置解释为宿主安全检查被关闭。

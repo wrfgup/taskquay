@@ -28,6 +28,16 @@ http://127.0.0.1:7676/console/
 
 新受管 Codex 线程在 turn/start 前登记项目、agent、实例、线程 ID 和创建事实。实例指纹使用本机、Codex home、执行程序及可核对账号信息，只保存摘要；不能确认身份时禁止自动归档。新线程通过 `thread/name/set` 设置 `[DevSpace][项目][工作短号] 标题`；命名失败不重跑推理，后续 resume 不覆盖用户后来改过的名字。
 
+## 实时观察与 Desktop 接管
+
+管理台的受管会话页显示 `devspace_active`、`interrupting`、`desktop_pending`、`desktop_owned`、`reconcile_required` 与 `terminal`，以及最近的脱敏控制事件。事件只保存时间、状态和 provider thread/turn 标识，不保存 prompt、命令参数、stdout 或隐藏推理。页面每次刷新仅读本地账本，不会启动模型。
+
+“转向”使用当前 owning app-server 连接的 `turn/steer`，并携带精确 `expectedTurnId`；“中断”使用 `turn/interrupt`。请求以 agent/request key 幂等，断线后结果未知会进入 `reconcile_required`，不会盲目重发。远端 MCP 只暴露这两项 active-turn 控制。
+
+“接管”仅对 owner 登录的任务台开放：先中断并等待真实 `turn/completed: interrupted`，再将单写者状态置为 `desktop_owned` 并通过 `codex://threads/<thread-id>` 打开原 thread。此时远端 continue/steer 均被拒绝。“归还 DevSpace”会通过只读 provider 元数据核对同实例、同工作目录、终态且 idle/notLoaded 后解除 Desktop 所有权；下一次明确请求仍走正常原生 resume/安全 history handoff 规则。
+
+可靠的实时显示面是可在 Codex Desktop 内置浏览器中打开的 `/console/`。原生聊天窗是否自动刷新由 Desktop 自己的连接决定；`thread/read` 不是事件订阅，DevSpace 不把 thread 已登记或 deep link 可打开描述成逐 token 原生同步。
+
 ## 一项任务、一份回执
 
 新增原生 `work_task`。主控直接阅读前开始工作，即使无需 Codex 也登记：
@@ -72,7 +82,7 @@ http://127.0.0.1:7676/console/
 
 ## 验收与发布边界
 
-Node 24、Codex CLI 0.135.0；数据库迁移 11，daemon 协议 6。源码、工具 schema、配置、页面和协议适配需要一起更新，宿主工具列表可能需重新加载。候选位于 `node_modules/.cache/devspace-console/dist`，没有覆盖 live dist。
+本次 active-turn 控制增加数据库迁移 17 与 daemon 协议 8。源码、工具 schema、页面和 daemon 必须作为同一候选启用；宿主工具列表需要重新加载。实现阶段不覆盖 live dist、不重启服务，也不把源码测试通过冒充线上已加载。
 
 专项测试覆盖账本幂等、跨工作区限制、纯主控零用量、26 轮汇总、失败计量、外部续写、迟到基线修正；HTTP 鉴权、Origin/CSRF/Host/远程默认拒绝、过期；MCP 真实传输回执与 yield 后继续阻止结算；JSON-RPC 夹具的新线程命名、turn 归属和迟到用量；归档的范围、预览冻结、活跃/外部/后代保护及未知副作用不重放。
 

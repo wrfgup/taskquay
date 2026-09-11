@@ -61,6 +61,7 @@ async function testDatabaseConfiguration(stateDir: string): Promise<void> {
       { version: 14, name: "successful-execution-responses" },
       { version: 15, name: "agent-history-handoff-lineage" },
       { version: 16, name: "local-agent-turns" },
+      { version: 17, name: "managed-agent-turn-control" },
     ]);
   } finally {
     database.close();

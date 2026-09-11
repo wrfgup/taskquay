@@ -17,8 +17,9 @@ test("upstream workspace recovery appends to the fork's existing migration histo
     assert.deepEqual(db.prepare("select version,name from devspace_schema_migrations where version=13").get(), { version: 13, name: "workspace-recovery-state" });
     assert.deepEqual(db.prepare("select id,root,recovery_kind from workspace_sessions").get(), { id: "fixture", root: "/fixture", recovery_kind: null });
     migrateDatabase(db);
-    assert.equal((db.prepare("select count(*) as n from devspace_schema_migrations").get() as { n: number }).n, 16);
+    assert.equal((db.prepare("select count(*) as n from devspace_schema_migrations").get() as { n: number }).n, 17);
     assert(db.prepare("select name from sqlite_master where type='table' and name='execution_responses'").get());
     assert(db.prepare("select name from sqlite_master where type='table' and name='local_agent_turns'").get());
+    assert(db.prepare("select name from sqlite_master where type='table' and name='agent_control_requests'").get());
   } finally { db.close(); }
 });

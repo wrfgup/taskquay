@@ -34,6 +34,15 @@ export interface LocalAgentRunResult {
   items: unknown[];
 }
 
+/** Exact, live provider connection that owns one active turn. */
+export interface LocalAgentTurnControl {
+  readonly providerThreadId: string;
+  readonly providerTurnId: string;
+  steer(prompt: string): Promise<{ turnId: string }>;
+  interrupt(): Promise<void>;
+  isAlive(): boolean;
+}
+
 export interface LocalAgentRunCallbacks {
   /** Positive adapter evidence: failure occurred before any inference dispatch. */
   onNotRequested?: () => void;
@@ -41,6 +50,7 @@ export interface LocalAgentRunCallbacks {
   onNameResult?: (success: boolean) => void;
   onRequest?: () => void | Promise<void>;
   onTurnStarted?: (turnId: string) => void | Promise<void>;
+  onControlReady?: (control: LocalAgentTurnControl) => void | Promise<void>;
   onProviderFinished?: () => void;
   onUsage?: (observation: AgentUsageObservation) => void;
   onActivity?: (activity: AgentActivity) => void;

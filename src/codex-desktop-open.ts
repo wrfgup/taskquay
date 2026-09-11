@@ -21,6 +21,11 @@ export function desktopWorkspaceLink(root: string): string {
   return link.href;
 }
 
+export function desktopThreadLink(threadId: string): string {
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{7,255}$/.test(threadId)) throw new Error("A valid local Codex thread id is required.");
+  return `codex://threads/${encodeURIComponent(threadId)}`;
+}
+
 /** Read client-owned metadata; only a genuinely absent single-root project may open a draft. */
 export async function ensureClientProject(roots: string[], runtime: DesktopOpenRuntime, timeoutMs = 15_000) {
   if (!roots.length || timeoutMs < 1 || timeoutMs > 30_000) throw new Error("Invalid bounded project-registration request.");

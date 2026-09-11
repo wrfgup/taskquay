@@ -8,7 +8,7 @@ const aliases: Record<string, Record<string, string>> = {
   read: { ...common, responseOffset: "response_offset" },
   workspace_context: { ...common, selectionIndex: "selection_index" },
   work_task: { ...common, workItemId: "work_item_id", runKey: "run_key", requestKey: "request_key", hostModelLabel: "host_model_label" },
-  agent_task: { ...common, agentId: "agent_id", taskKey: "task_key", readOnly: "read_only", workItemId: "work_item_id",
+  agent_task: { ...common, agentId: "agent_id", taskKey: "task_key", readOnly: "read_only", workItemId: "work_item_id", expectedTurnId: "expected_turn_id",
     contextKey: "context_key", freshContext: "fresh_context", requestKey: "request_key", waitMs: "wait_ms",
     knownRevision: "known_revision", includeResponse: "include_response", responseOffset: "response_offset" },
   apply_patch: common,

@@ -4,7 +4,7 @@ import type { Request, Response } from "express";
 type RecordEvent = (event: string, fields: Record<string, unknown>, level?: "info" | "warn" | "error") => void;
 const methods = new Set(["initialize", "server/discover", "tools/list", "tools/call", "resources/list", "resources/read", "resources/templates/list", "notifications/initialized", "ping"]);
 const tools = new Set(["open_workspace", "read", "workspace_context", "work_task", "agent_task", "exec_command", "write_stdin", "apply_patch", "show_changes", "write", "edit", "bash"]);
-const actions = new Set(["begin", "record", "finish", "get", "list", "snapshot", "history", "start", "continue", "observe", "claims", "usage", "cancelQueued", "capture", "search"]);
+const actions = new Set(["begin", "record", "finish", "get", "list", "snapshot", "history", "start", "continue", "observe", "claims", "usage", "cancelQueued", "steer", "interrupt", "capture", "search"]);
 const errorCodes = new Set(["WORK_STATE", "INVALID_TASK", "AGENT_CONFLICT", "EXECUTION_CONFLICT", "STALE_CONTEXT", "ACCESS_DENIED", "WORKSPACE_NOT_FOUND", "WORKSPACE_MISMATCH", "AGENT_NOT_FOUND"]);
 const object = (value: unknown): Record<string, any> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : {};
 const known = (value: unknown, allowed: Set<string>) => typeof value === "string" && allowed.has(value) ? value : "other";
