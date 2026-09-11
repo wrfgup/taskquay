@@ -487,6 +487,46 @@ test("open_workspace scopes checkout reuse to OpenAI session metadata", async (t
   assert.ok(Array.isArray(structuredContent(unscoped).agents_files));
 });
 
+test("authenticated HTTP normalizes cached tool arguments without relaxing canonical checks", async (t) => {
+  const { root, localBaseUrl, accessToken } = await httpServerFixture(t, "devspace-cached-arguments-");
+  await writeFile(join(root, "cached.txt"), "first\nsecond\nthird\n");
+  const meta = { "openai/session": "cached-contract-regression" };
+  const opened = await postModernMcp(localBaseUrl, accessToken, "tools/call", {
+    name: "open_workspace", arguments: { path: root }, _meta: meta,
+  });
+  assert.equal(opened.status, 200);
+  const body = await opened.json() as { result?: { structuredContent?: { workspace_id?: string } } };
+  const workspaceId = body.result?.structuredContent?.workspace_id;
+  assert.equal(typeof workspaceId, "string");
+  const cached = { name: "workspace_context", arguments: { workspaceId, action: "capture",
+    files: [{ path: "cached.txt", startLine: 2, maxLines: 1 }] }, _meta: meta };
+  const unauthorized = await postModernMcp(localBaseUrl, undefined, "tools/call", cached);
+  assert.equal(unauthorized.status, 401);
+  await unauthorized.text();
+  const read = await postModernMcp(localBaseUrl, accessToken, "tools/call", cached);
+  assert.equal(read.status, 200);
+  const readBody = await read.json() as { result?: { isError?: boolean; content?: Array<{ type: string; text?: string }> } };
+  assert.equal(readBody.result?.isError, undefined);
+  const content = readBody.result?.content?.find((item) => item.type === "text")?.text;
+  assert.equal(typeof content, "string");
+  const captured = JSON.parse(content!) as { entries?: Array<{ lines?: Array<{ line: number; text: string }> }> };
+  assert.deepEqual(captured.entries?.[0]?.lines?.map(({ line, text }) => ({ line, text })), [{ line: 2, text: "second" }]);
+  const conflict = await postModernMcp(localBaseUrl, accessToken, "tools/call", {
+    name: "read", arguments: { workspaceId, workspace_id: "different-private-scope", path: "cached.txt" }, _meta: meta,
+  });
+  assert.equal(conflict.status, 400);
+  const error = await conflict.text();
+  assert(!error.includes("different-private-scope"));
+  for (const file of [{ path: "cached.txt", startLine: 1, maxLines: 251 },
+    { path: "cached.txt", maxLines: 1, unexpected: true }]) {
+    const rejected = await postModernMcp(localBaseUrl, accessToken, "tools/call", {
+      name: "workspace_context", arguments: { workspaceId, action: "capture", files: [file] }, _meta: meta,
+    });
+    const invalid = await rejected.json() as { error?: unknown; result?: { isError?: boolean } };
+    assert(invalid.error || invalid.result?.isError, "Canonical range and strict-key checks must still reject invalid requests");
+  }
+});
+
 test("HTTP endpoint serves modern MCP and stateless legacy clients", async (t) => {
   const { root, localBaseUrl, accessToken } = await httpServerFixture(
     t,

@@ -1,4 +1,5 @@
 import { randomUUID, createHash } from "node:crypto";
+import { ConflictingToolAliasError, normalizeCachedToolCall } from "./mcp-cached-arguments.js";
 import { textPage, REPLY_BYTES } from "./bounded-reply.js";
 import { argumentFingerprint } from "./mcp-request-diagnostics.js";
 import { ensureDesktopProject } from "./codex-projects.js";
@@ -1017,8 +1018,12 @@ export function createServer(
     });
 
     try {
-      await mcpNodeHandler(req, res, req.body);
+      await mcpNodeHandler(req, res, normalizeCachedToolCall(req.body));
     } catch (error) {
+      if (error instanceof ConflictingToolAliasError) {
+        if (!res.headersSent) sendJsonRpcError(res, 400, -32602, error.message);
+        return;
+      }
       logEvent(config.logging, "error", "mcp_request_error", {
         requestId,
         error: error instanceof Error ? error.message : String(error),
