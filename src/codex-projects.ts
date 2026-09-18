@@ -10,9 +10,15 @@ import { ensureSavedDesktopProject } from "./codex-desktop-open.js";
 import * as z from "zod/v4";
 import { assertAllowedPath, canonicalPathIdentity, expandHomePath, isPathInsideRoot } from "./roots.js";
 
-// Verified against Desktop 26.901.6511.0 / bundled app-server 0.153.4.
+// Verified against bundled 0.153.4 and 0.154.0-alpha.6.2 generated experimental
+// schemas. Runtime schema and provider-home checks still gate every operation.
 // These are real project RPCs, not edits to Desktop JSON or Codex SQLite.
 export const PROJECT_PROTOCOL = "codex-app-server-projects/0.153.4";
+export const VERIFIED_DESKTOP_VERSIONS = ["0.153.4", "0.154.0-alpha.6.2"] as const;
+export function verifiedDesktopVersion(output: string): boolean {
+  const version = /^codex-cli ([0-9A-Za-z.+-]+)\s*$/.exec(output.trim())?.[1];
+  return VERIFIED_DESKTOP_VERSIONS.some((allowed) => allowed === version);
+}
 const projectSchema = z.object({ id: z.string().min(1), name: z.string(),
   roots: z.array(z.object({ path: z.string().min(1) }).passthrough()).min(1),
   createdAt: z.number().int(), updatedAt: z.number().int(), position: z.number().int(),
@@ -209,9 +215,9 @@ export async function connectDesktopProjects(env: NodeJS.ProcessEnv = process.en
       .map((entry) => join(base, entry.name, "codex.exe")) : [];
   const command = candidates.find((candidate) => {
     const probe = spawnSync(candidate, ["--version"], { env, windowsHide: true, encoding: "utf8", timeout: 5000 });
-    return probe.status === 0 && probe.stdout.trim() === "codex-cli 0.153.4";
+    return probe.status === 0 && verifiedDesktopVersion(probe.stdout);
   });
-  if (!command) throw new Error("No verified Desktop app-server 0.153.4 found. Configure DEVSPACE_CODEX_DESKTOP_COMMAND or update the adapter; no model was started.");
+  if (!command) throw new Error(`No verified Desktop app-server (${VERIFIED_DESKTOP_VERSIONS.join(", ")}) found. Configure DEVSPACE_CODEX_DESKTOP_COMMAND or update the adapter; no model was started.`);
   const child = spawn(command, ["app-server"], { env, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
   const pending = new Map<number, { method: string; resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
   let sequence = 0;

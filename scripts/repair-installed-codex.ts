@@ -16,7 +16,9 @@ if (!path || !process.env.LOCALAPPDATA || !resolve(path).startsWith(resolve(allo
 }
 if (!existsSync(path)) throw new Error("The selected installed executable is absent.");
 const probe = spawnSync(path, ["--version"], { encoding: "utf8", windowsHide: true, timeout: 5_000 });
-const version = /^codex-cli (\d+\.\d+\.\d+)\s*$/.exec(probe.stdout ?? "")?.[1];
+// Desktop updates may install a prerelease. Validate its complete SemVer rather
+// than refusing a working executable merely because it has a prerelease suffix.
+const version = /^codex-cli (\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)\s*$/.exec(probe.stdout ?? "")?.[1];
 if (probe.error || probe.status !== 0 || !version) throw new Error("Installed Codex version probe failed.");
 const config = loadConfig();
 const current = resolveCodexCommand(localAgentProviderEnvironment(config.subagents, "codex"));
