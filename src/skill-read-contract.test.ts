@@ -40,8 +40,8 @@ test("advertised skill tilde/absolute read and capture agree; unadvertised and s
     rmSync(root, { recursive: true, force: true });
   });
   const read = async (path: string) => {
-    const resolved = workspaces.resolveReadPath(opened.workspace, path);
-    return readFileTool({ path: resolved.absolutePath }, { root: project, cwd: project, readRoots: resolved.readRoots });
+    const resolved = await workspaces.resolveReadPath(opened.workspace, path);
+    return readFileTool({ path: resolved.absolutePath }, { cwd: project });
   };
   const capture = async (path: string) => client.callTool({ name: "workspace_context", arguments: {
     workspace_id: opened.workspace.id, action: "capture", files: [{ path }],

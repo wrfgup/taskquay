@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { access, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
@@ -179,6 +179,50 @@ test("Claude edit and bash tools accept snake_case runtime inputs", async (t) =>
   assert.match(shell.result as string, /nested/i);
 });
 
+test("read rejects a symlink that leaves the workspace", async (t) => {
+  const context = await fixture(t, { toolMode: "claude", uiEnabled: false });
+  const outside = await mkdtemp(join(tmpdir(), "devspace-server-outside-test-"));
+  t.after(async () => rm(outside, { recursive: true, force: true }));
+  await writeFile(join(outside, "secret.txt"), "outside secret\n");
+
+  const outsideLink = join(context.project, "outside-link");
+  await symlink(outside, outsideLink, platform() === "win32" ? "junction" : "dir");
+  const workspaceId = structuredContent(
+    await callOpen(context.client, context.project, "symlink-read"),
+  ).workspace_id;
+  assert.equal(typeof workspaceId, "string");
+
+  const result = await context.client.callTool({
+    name: "read",
+    arguments: { workspace_id: workspaceId, path: "outside-link/secret.txt" },
+  });
+  assert.equal(result.isError, true);
+});
+
+test("write rejects a new file through a symlink that leaves the workspace", async (t) => {
+  const context = await fixture(t, { toolMode: "claude", uiEnabled: false });
+  const outside = await mkdtemp(join(tmpdir(), "devspace-server-outside-test-"));
+  t.after(async () => rm(outside, { recursive: true, force: true }));
+
+  const outsideLink = join(context.project, "outside-link");
+  await symlink(outside, outsideLink, platform() === "win32" ? "junction" : "dir");
+  const workspaceId = structuredContent(
+    await callOpen(context.client, context.project, "symlink-write"),
+  ).workspace_id;
+  assert.equal(typeof workspaceId, "string");
+
+  const result = await context.client.callTool({
+    name: "write",
+    arguments: {
+      workspace_id: workspaceId,
+      path: "outside-link/new.txt",
+      content: "escaped\n",
+    },
+  });
+  assert.equal(result.isError, true);
+  await assert.rejects(access(join(outside, "new.txt")));
+});
+
 test("UI metadata is limited to workspace and aggregate review", async (t) => {
   for (const uiEnabled of [true, false]) {
     await t.test(uiEnabled ? "enabled" : "disabled", async (nested) => {
@@ -230,6 +274,39 @@ test("open_workspace reports aggregate review availability", async (t) => {
 
   assert.equal((plainReview as { available: boolean }).available, false);
   assert.deepEqual(gitReview, { available: true });
+});
+
+test("show_changes reviews an unborn repository through the MCP tool surface", async (t) => {
+  const context = await fixture(t, { uiEnabled: false });
+  await git(context.project, ["init"]);
+
+  const opened = structuredContent(await callOpen(context.client, context.project, "unborn-review"));
+  const workspaceId = opened.workspace_id;
+  assert.equal(typeof workspaceId, "string");
+  assert.deepEqual(opened.review, { available: true });
+
+  await writeFile(join(context.project, "created-after-open.txt"), "new file\n");
+  const review = await context.client.callTool({
+    name: "show_changes",
+    arguments: { workspace_id: workspaceId },
+  });
+  const card = responseCard(review);
+
+  assert.deepEqual(card.files, [
+    {
+      path: "created-after-open.txt",
+      type: "new",
+      additions: 1,
+      removals: 0,
+    },
+  ]);
+  assert.match(
+    ((card.payload as { patch?: string } | undefined)?.patch) ?? "",
+    /new file/,
+  );
+  await assert.rejects(() => execFileAsync("git", ["rev-parse", "--verify", "HEAD^{commit}"], {
+    cwd: context.project,
+  }));
 });
 
 test("show_changes keeps model output compact and preserves the rich review card", async (t) => {

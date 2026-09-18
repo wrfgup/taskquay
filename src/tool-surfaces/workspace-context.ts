@@ -46,7 +46,7 @@ export function registerWorkspaceContextTool({ server, config, workspaces, proce
       const receipt = { operationId, workRunId: input.workRunId, hostAcknowledgment: "unknown" };
       if (input.action === "list") {
         const base = await realpath(workspace.root);
-        const path = workspaces.resolvePath(workspace, input.directory ?? ".");
+        const path = await workspaces.resolvePath(workspace, input.directory ?? ".");
         const resolved = await realpath(path);
         const rest = relative(base, resolved);
         if (isAbsolute(rest) || rest === ".." || rest.startsWith(`..${sep}`)) throw new Error("Directory is outside this workspace.");
@@ -63,8 +63,8 @@ export function registerWorkspaceContextTool({ server, config, workspaces, proce
       }
       if (!input.files?.length || (input.action === "search" && !input.query)) throw new Error("Select explicit files; search also needs a literal query.");
       let bytesRead = 0;
-      const files = input.files.map((selection) => {
-        const resolved = workspaces.resolveReadPath(workspace, selection.path);
+      const files = await Promise.all(input.files.map(async (selection) => {
+        const resolved = await workspaces.resolveReadPath(workspace, selection.path);
         const readRoot = resolved.skillRead?.skill.baseDir ?? workspace.root;
         const file = readContextFile(readRoot, relative(readRoot, resolved.absolutePath));
         // External skill refs are read evidence, not workspace source refs for delegation.
@@ -72,7 +72,7 @@ export function registerWorkspaceContextTool({ server, config, workspaces, proce
         bytesRead += file.bytes.length;
         if (bytesRead > 4 * 1024 * 1024) throw new Error("Context capture exceeds 4 MiB; narrow the selected files.");
         return { file, selection };
-      });
+      }));
       const index = input.selectionIndex ?? 0;
       if (index >= files.length) throw new Error("Invalid selection index.");
       const { file, selection } = files[index]!;

@@ -56,6 +56,9 @@ export interface ToolLogFields {
   workingDirectory?: string;
   command?: string;
   commandLength?: number;
+  sessionId?: number;
+  running?: boolean;
+  exitCode?: number;
   success: boolean;
   durationMs: number;
   error?: string;

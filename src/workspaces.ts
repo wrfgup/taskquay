@@ -24,7 +24,8 @@ import {
   assertAllowedPath,
   expandHomePath,
   isPathInsideRoot,
-  resolveAllowedPath,
+  resolveCanonicalAllowedPath,
+  resolvePathInsideCanonicalRoot,
 } from "./roots.js";
 import {
   loadWorkspaceSkills,
@@ -58,6 +59,7 @@ export interface WorkspaceWorktree {
 export interface Workspace {
   id: string;
   root: string;
+  canonicalRoot: string;
   mode: WorkspaceMode;
   sourceRoot?: string;
   worktree?: WorkspaceWorktree;
@@ -76,7 +78,6 @@ export interface WorkspaceContext {
 
 export interface WorkspaceReadPath {
   absolutePath: string;
-  readRoots: string[];
   skillRead?: SkillReadResolution;
 }
 
@@ -247,6 +248,7 @@ export class WorkspaceRegistry {
     let root: string;
     try {
       root = this.assertWorkspaceRootAllowed(session.root, session.mode, session.sourceRoot);
+      await this.resolveCanonicalWorkspaceRoot(root, session.mode, session.sourceRoot);
       const rootStats = await stat(root);
       if (!rootStats.isDirectory()) return undefined;
     } catch (error) {
@@ -266,8 +268,7 @@ export class WorkspaceRegistry {
   }
 
   private async conversationProjectKey(input: OpenWorkspaceInput): Promise<string> {
-    const path = assertAllowedPath(input.path, this.config.allowedRoots);
-    return canonicalPath(path);
+    return resolveCanonicalAllowedPath(input.path, process.cwd(), this.config.allowedRoots);
   }
 
   private conversationCheckoutTargetKey(projectKey: string): string {
@@ -292,13 +293,19 @@ export class WorkspaceRegistry {
     const workspace = this.workspaces.get(workspaceId);
     if (workspace) {
       if (!this.store) {
+        await this.assertWorkspaceRootUnchanged(workspace);
         this.workspaces.delete(workspaceId);
         this.workspaces.set(workspaceId, workspace);
         return workspace;
       }
-      const touched = this.store.touchSession(workspaceId);
-      if (touched.isErr()) throw touched.error;
-      if (touched.value) {
+
+      const cachedSession = this.store.getSessionResult(workspaceId);
+      if (cachedSession.isErr()) throw cachedSession.error;
+      if (cachedSession.value?.status === "active") {
+        await this.assertWorkspaceRootUnchanged(workspace);
+        const touched = this.store.touchSession(workspaceId);
+        if (touched.isErr()) throw touched.error;
+        if (!touched.value) throw unavailableWorkspaceError(workspaceId);
         this.workspaces.delete(workspaceId);
         this.workspaces.set(workspaceId, workspace);
         return workspace;
@@ -326,6 +333,11 @@ export class WorkspaceRegistry {
     }
 
     const root = this.assertWorkspaceRootAllowed(session.root, session.mode, session.sourceRoot);
+    const canonicalRoot = await this.resolveCanonicalWorkspaceRoot(
+      root,
+      session.mode,
+      session.sourceRoot,
+    );
     if (this.store) {
       const touched = this.store.touchSession(workspaceId);
       if (touched.isErr()) throw touched.error;
@@ -335,6 +347,7 @@ export class WorkspaceRegistry {
     const restoredWorkspace: Workspace = {
       id: session.id,
       root,
+      canonicalRoot,
       mode: session.mode,
       sourceRoot: session.sourceRoot,
       worktree:
@@ -423,22 +436,21 @@ export class WorkspaceRegistry {
     return Result.ok(undefined);
   }
 
-  resolvePath(workspace: Workspace, inputPath: string): string {
-    const absolutePath = resolveAllowedPath(inputPath, workspace.root, [workspace.root]);
-    if (!isPathInsideRoot(absolutePath, workspace.root)) {
-      throw new Error(`Path is outside workspace root: ${inputPath}`);
-    }
-
-    return absolutePath;
+  async resolvePath(workspace: Workspace, inputPath: string): Promise<string> {
+    return resolvePathInsideCanonicalRoot(
+      inputPath,
+      workspace.root,
+      workspace.root,
+      workspace.canonicalRoot,
+    );
   }
 
-  resolveReadPath(workspace: Workspace, inputPath: string): WorkspaceReadPath {
+  async resolveReadPath(workspace: Workspace, inputPath: string): Promise<WorkspaceReadPath> {
     // Expand advertised home paths before workspace resolution can turn ~ into a literal directory.
     inputPath = expandHomePath(inputPath);
     try {
       return {
-        absolutePath: this.resolvePath(workspace, inputPath),
-        readRoots: [workspace.root],
+        absolutePath: await this.resolvePath(workspace, inputPath),
       };
     } catch (workspaceError) {
       const skillRead = resolveSkillReadPath(
@@ -448,26 +460,29 @@ export class WorkspaceRegistry {
       if (!skillRead) throw workspaceError;
 
       return {
-        absolutePath: skillRead.absolutePath,
-        readRoots: [workspace.root, skillRead.skill.baseDir],
+        absolutePath: await resolveCanonicalAllowedPath(
+          skillRead.absolutePath,
+          workspace.root,
+          [skillRead.skill.baseDir],
+        ),
         skillRead,
       };
     }
   }
 
-  resolveWorkingDirectory(workspace: Workspace, workingDirectory: string | undefined): string {
-    const directory = workingDirectory ? this.resolvePath(workspace, workingDirectory) : workspace.root;
-    return assertAllowedPath(directory, [workspace.root]);
+  async resolveWorkingDirectory(workspace: Workspace, workingDirectory: string | undefined): Promise<string> {
+    return workingDirectory ? this.resolvePath(workspace, workingDirectory) : workspace.root;
   }
 
   private async openCheckoutWorkspace(path: string): Promise<WorkspaceContext> {
     const root = assertAllowedPath(path, this.config.allowedRoots);
+    const canonicalRoot = await resolveCanonicalAllowedPath(root, process.cwd(), this.config.allowedRoots);
     const rootStats = await stat(root);
     if (!rootStats.isDirectory()) {
       throw new Error(`Workspace root must be a directory: ${path}`);
     }
 
-    return this.createWorkspaceContext({ root, mode: "checkout" });
+    return this.createWorkspaceContext({ root, canonicalRoot, mode: "checkout" });
   }
 
   private async openWorktreeWorkspace(path: string, baseRef: string | undefined): Promise<WorkspaceContext> {
@@ -476,9 +491,20 @@ export class WorkspaceRegistry {
       baseRef,
       config: this.config,
     });
+    await resolveCanonicalAllowedPath(
+      worktree.sourceRoot,
+      process.cwd(),
+      this.config.allowedRoots,
+    );
+    const canonicalRoot = await resolveCanonicalAllowedPath(
+      worktree.path,
+      process.cwd(),
+      [this.config.worktreeRoot],
+    );
 
     return this.createWorkspaceContext({
       root: worktree.path,
+      canonicalRoot,
       mode: "worktree",
       sourceRoot: worktree.sourceRoot,
       worktree,
@@ -487,6 +513,7 @@ export class WorkspaceRegistry {
 
   private async createWorkspaceContext(input: {
     root: string;
+    canonicalRoot: string;
     mode: WorkspaceMode;
     sourceRoot?: string;
     worktree?: WorkspaceWorktree;
@@ -494,6 +521,7 @@ export class WorkspaceRegistry {
     const workspace: Workspace = {
       id: `ws_${randomBytes(5).toString("hex")}`,
       root: input.root,
+      canonicalRoot: input.canonicalRoot,
       mode: input.mode,
       sourceRoot: input.sourceRoot,
       worktree: input.worktree,
@@ -555,6 +583,34 @@ export class WorkspaceRegistry {
     return assertAllowedPath(root, this.config.allowedRoots);
   }
 
+  private async resolveCanonicalWorkspaceRoot(
+    root: string,
+    mode: WorkspaceMode,
+    sourceRoot: string | undefined,
+  ): Promise<string> {
+    if (mode === "worktree") {
+      if (!sourceRoot) {
+        throw new Error(`Stored worktree workspace is missing sourceRoot: ${root}`);
+      }
+      await resolveCanonicalAllowedPath(sourceRoot, process.cwd(), this.config.allowedRoots);
+      return resolveCanonicalAllowedPath(root, process.cwd(), [this.config.worktreeRoot]);
+    }
+
+    return resolveCanonicalAllowedPath(root, process.cwd(), this.config.allowedRoots);
+  }
+
+  private async assertWorkspaceRootUnchanged(workspace: Workspace): Promise<void> {
+    let currentRoot: string;
+    try {
+      currentRoot = await realpath(workspace.root);
+    } catch {
+      throw new AccessDeniedError(`Workspace root is no longer accessible: ${workspace.root}`);
+    }
+    if (currentRoot !== workspace.canonicalRoot) {
+      throw new AccessDeniedError(`Workspace root changed after it was opened: ${workspace.root}`);
+    }
+  }
+
   private async loadInitialAgentsFiles(root: string): Promise<LoadedAgentsFile[]> {
     const agentDir = resolve(this.config.agentDir);
     const resolvedRoot = (await tryRealpath(root)) ?? root;
@@ -611,26 +667,6 @@ function unavailableWorkspaceError(workspaceId: string): Error {
   return new Error(
     `Unknown workspaceId: ${workspaceId}. Open the target project or worktree again and continue with the new workspaceId.`,
   );
-}
-
-async function canonicalPath(path: string): Promise<string> {
-  const missingSegments: string[] = [];
-  let candidate = path;
-
-  while (true) {
-    try {
-      return resolve(await realpath(candidate), ...missingSegments.slice().reverse());
-    } catch (error) {
-      if (!isErrnoException(error) || (error.code !== "ENOENT" && error.code !== "ENOTDIR")) {
-        throw error;
-      }
-
-      const parent = dirname(candidate);
-      if (parent === candidate) return path;
-      missingSegments.push(basename(candidate));
-      candidate = parent;
-    }
-  }
 }
 
 export async function ensureCheckoutWorkspaceRoot(

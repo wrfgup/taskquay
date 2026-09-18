@@ -65,10 +65,9 @@ function registerClaudeMutationTools(context: ToolRegistrationContext): void {
       const workspaceId = workspace_id;
       const workRunId = work_run_id;
       const workspace = await workspaces.getWorkspace(workspaceId);
-      workspaces.resolvePath(workspace, input.path);
-      const response = await trackedWork(config.stateDir, workRunId, { root: workspace.root, workspaceId }, "write", () => processSessions.mutate(workspace.root, () => writeFileTool(input, {
+      const path = await workspaces.resolvePath(workspace, input.path);
+      const response = await trackedWork(config.stateDir, workRunId, { root: workspace.root, workspaceId }, "write", () => processSessions.mutate(workspace.root, () => writeFileTool({ ...input, path }, {
         cwd: workspace.root,
-        root: workspace.root,
       })));
 
       if (response.isError) {
@@ -137,16 +136,16 @@ function registerClaudeMutationTools(context: ToolRegistrationContext): void {
       const workspaceId = workspace_id;
       const workRunId = work_run_id;
       const workspace = await workspaces.getWorkspace(workspaceId);
-      workspaces.resolvePath(workspace, input.path);
+      const path = await workspaces.resolvePath(workspace, input.path);
       const response = await trackedWork(config.stateDir, workRunId, { root: workspace.root, workspaceId }, "edit", () => processSessions.mutate(workspace.root, () => editFileTool({
         ...input,
+        path,
         edits: edits.map(({ old_text, new_text }) => ({
           oldText: old_text,
           newText: new_text,
         })),
       }, {
         cwd: workspace.root,
-        root: workspace.root,
       })));
 
       if (response.isError) {
@@ -223,13 +222,12 @@ function registerShellTool(context: ToolRegistrationContext): void {
       const workingDirectory = working_directory;
       const workRunId = work_run_id;
       const workspace = await workspaces.getWorkspace(workspaceId);
-      const cwd = workspaces.resolveWorkingDirectory(
+      const cwd = await workspaces.resolveWorkingDirectory(
         workspace,
         workingDirectory,
       );
       const response = await trackedWork(config.stateDir, workRunId, { root: workspace.root, workspaceId }, "bash", () => processSessions.mutate(workspace.root, () => runShellTool(input, {
         cwd,
-        root: workspace.root,
       })));
 
       if (response.isError) {

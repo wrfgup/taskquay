@@ -37,8 +37,14 @@ file-object shape, trusted OpenAI download hosts, and redirects before streaming
 Malformed references, unknown fields, absolute paths, traversal, and symlinked
 parents are rejected.
 
-Downloads are streamed under `artifacts.maxFileBytes` and published as
-owner-only files without overwriting an existing destination. The tool is
-currently available on Linux. It is not registered on macOS, Windows, or BSD
-because Node.js does not expose the required descriptor-relative filesystem
-operations there.
+Downloads are streamed under `artifacts.maxFileBytes` and published without
+overwriting an existing destination. The tool is available on Linux, macOS,
+and Windows. Linux uses descriptor-anchored directory operations. macOS uses
+descriptor-relative `*at` filesystem operations so destination traversal never
+falls back to an unpinned path. Windows pins each destination directory with
+native handles that reject reparse points and prevent rename/replacement while
+the transfer is in progress. BSD remains unsupported.
+
+On POSIX filesystems the partial is created with mode `0600`. Windows file
+permissions follow the destination directory's ACL inheritance rather than
+POSIX mode bits.

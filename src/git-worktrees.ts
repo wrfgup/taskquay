@@ -5,7 +5,11 @@ import { lstat, mkdir, realpath, rm, stat } from "node:fs/promises";
 import { basename, join, relative, resolve } from "node:path";
 import { Result, TaggedError, type Result as BetterResult } from "better-result";
 import type { ServerConfig } from "./config.js";
-import { assertAllowedPath, isPathInsideRoot } from "./roots.js";
+import {
+  assertAllowedPath,
+  isPathInsideRoot,
+  resolveCanonicalAllowedPath,
+} from "./roots.js";
 import type {
   WorkspaceRecoveryKind,
   WorkspaceSession,
@@ -214,6 +218,7 @@ export async function restoreManagedWorktree(input: {
 
     const sourceRoot = await assertCleanupSourceRootAllowed(sourceRootPath, input.allowedRoots);
     await mkdir(input.worktreeRoot, { recursive: true });
+    await resolveCanonicalAllowedPath(worktreePath, input.worktreeRoot, [input.worktreeRoot]);
 
     let created = false;
     try {

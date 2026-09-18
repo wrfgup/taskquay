@@ -266,6 +266,41 @@ test("failed prune compensation leaves the session pruned for later recovery", a
   assert.equal(fixture.store.getSession("ws_failed_compensation")?.recoveryKind, "stash");
 });
 
+test("restore rejects a pruned worktree path through an escaping symlink", async (t) => {
+  const fixture = await worktreeFixture(t, "ws_restore_guard");
+  const outsideParent = join(fixture.root, "outside-worktrees");
+  const escapedParent = join(fixture.worktreeRoot, "escaped-parent");
+  const escapedWorktree = join(escapedParent, "restored");
+  await mkdir(outsideParent);
+  await symlink(
+    outsideParent,
+    escapedParent,
+    platform() === "win32" ? "junction" : "dir",
+  );
+
+  const session = fixture.store.createSession({
+    id: "ws_restore_escape",
+    root: escapedWorktree,
+    mode: "worktree",
+    sourceRoot: fixture.sourceRoot,
+    baseRef: "HEAD",
+    baseSha: await git(fixture.sourceRoot, ["rev-parse", "HEAD"]),
+    managed: true,
+  });
+  unwrap(fixture.store.markSessionPruned(session.id));
+  const pruned = fixture.store.getSession(session.id);
+  assert.ok(pruned);
+
+  const restored = await restoreManagedWorktree({
+    session: pruned,
+    worktreeRoot: fixture.worktreeRoot,
+    allowedRoots: [fixture.root],
+  });
+
+  assert.equal(restored.isErr(), true);
+  assert.equal(await pathExists(join(outsideParent, "restored")), false);
+});
+
 test("cleanup rejects a managed worktree path replaced by a symlink", { skip: platform() === "win32" }, async (t) => {
   const fixture = await worktreeFixture(t, "ws_symlink");
   const victimRoot = join(fixture.root, "victim");

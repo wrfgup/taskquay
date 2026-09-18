@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {
-  link,
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
@@ -8,7 +8,6 @@ import {
   rm,
   stat,
   symlink,
-  unlink,
   utimes,
   writeFile,
 } from "node:fs/promises";
@@ -23,6 +22,7 @@ import {
   registerArtifactTools,
 } from "./artifact-tools.js";
 import { ArtifactError } from "./artifact-error.js";
+import { parseSafeWindowsArtifactRelativePath } from "./artifact-path-windows.js";
 import {
   IncomingArtifactAdapterRegistry,
   type IncomingArtifactAdapter,
@@ -33,6 +33,7 @@ const root = await mkdtemp(join(tmpdir(), "devspace-artifact-download-test-"));
 try {
   testOneToolContract();
   testPlatformSupportContract();
+  testWindowsPathValidationContract();
   if (isArtifactDownloadSupportedPlatform()) {
     await testSafeDownloadAndConflict(join(root, "downloads"));
     await testDestinationValidation(join(root, "destinations"));
@@ -99,11 +100,43 @@ function testOneToolContract(): void {
 
 function testPlatformSupportContract(): void {
   assert.equal(isArtifactDownloadSupportedPlatform("linux"), true);
-  assert.equal(isArtifactDownloadSupportedPlatform("darwin"), false);
+  assert.equal(isArtifactDownloadSupportedPlatform("darwin"), true);
   assert.equal(isArtifactDownloadSupportedPlatform("freebsd"), false);
   assert.equal(isArtifactDownloadSupportedPlatform("openbsd"), false);
   assert.equal(isArtifactDownloadSupportedPlatform("netbsd"), false);
-  assert.equal(isArtifactDownloadSupportedPlatform("win32"), false);
+  assert.equal(isArtifactDownloadSupportedPlatform("win32"), true);
+}
+
+function testWindowsPathValidationContract(): void {
+  for (const path of [
+    "../outside.txt",
+    "C:drive-relative.txt",
+    "C:\\absolute.txt",
+    "\\\\server\\share\\file.txt",
+    "\\\\?\\C:\\file.txt",
+    "file.txt:stream",
+    "CON",
+    "con.txt",
+    "CLOCK$",
+    "COM¹.txt",
+    "LPT³.log",
+    "folder/trailing-dot.",
+    "folder/trailing-space ",
+    "folder/invalid?.txt",
+  ]) {
+    assert.equal(parseSafeWindowsArtifactRelativePath(path), undefined, path);
+  }
+
+  assert.deepEqual(parseSafeWindowsArtifactRelativePath("assets\\icons/lovely.png"), {
+    path: "assets/icons/lovely.png",
+    parts: ["assets", "icons", "lovely.png"],
+    name: "lovely.png",
+  });
+  assert.deepEqual(parseSafeWindowsArtifactRelativePath("画像/アイコン.png"), {
+    path: "画像/アイコン.png",
+    parts: ["画像", "アイコン.png"],
+    name: "アイコン.png",
+  });
 }
 
 async function testUnsupportedPlatform(testRoot: string): Promise<void> {
@@ -165,7 +198,19 @@ async function testDestinationValidation(testRoot: string): Promise<void> {
   const workspaceRoot = join(testRoot, "workspace");
   await mkdir(workspaceRoot, { recursive: true });
 
-  for (const path of ["../outside.txt", "nested/../outside.txt", "/absolute.txt", "folder/"]) {
+  const invalidPaths = ["../outside.txt", "nested/../outside.txt", "/absolute.txt", "folder/"];
+  if (process.platform === "win32") {
+    invalidPaths.push(
+      "C:drive-relative.txt",
+      "C:\\absolute.txt",
+      "\\\\server\\share\\file.txt",
+      "file.txt:stream",
+      "CON.txt",
+      "folder/trailing-dot.",
+      "folder/trailing-space ",
+    );
+  }
+  for (const path of invalidPaths) {
     await expectArtifactError(
       downloadIncomingArtifact({
         registry: registryFor({ name: "blocked.txt", stream: Readable.from(["blocked"]) }),
@@ -239,6 +284,7 @@ async function testCrashLeftoverCleanup(testRoot: string): Promise<void> {
   await writeFile(unrelated, "unrelated");
   const old = new Date(Date.now() - (48 * 60 * 60 * 1_000));
   await utimes(stalePartial, old, old);
+  if (process.platform !== "win32") await chmod(stalePartial, 0o000);
 
   await downloadIncomingArtifact({
     registry: registryFor({ name: "second.txt", stream: Readable.from(["second"]) }),
@@ -258,13 +304,11 @@ async function testCrashLeftoverCleanup(testRoot: string): Promise<void> {
 }
 
 async function testSymlinkRejection(testRoot: string): Promise<void> {
-  if (process.platform === "win32") return;
-
   const outside = join(testRoot, "outside");
   await mkdir(outside, { recursive: true, mode: 0o700 });
 
   const linkedWorkspaceRoot = join(testRoot, "linked-workspace");
-  await symlink(outside, linkedWorkspaceRoot, "dir");
+  await symlink(outside, linkedWorkspaceRoot, process.platform === "win32" ? "junction" : "dir");
   await expectArtifactError(
     downloadIncomingArtifact({
       registry: registryFor({ name: "blocked.txt", stream: Readable.from(["blocked"]) }),
@@ -279,7 +323,11 @@ async function testSymlinkRejection(testRoot: string): Promise<void> {
 
   const linkedDestinationRoot = join(testRoot, "linked-destination-workspace");
   await mkdir(linkedDestinationRoot, { recursive: true });
-  await symlink(outside, join(linkedDestinationRoot, "assets"), "dir");
+  await symlink(
+    outside,
+    join(linkedDestinationRoot, "assets"),
+    process.platform === "win32" ? "junction" : "dir",
+  );
   await expectArtifactError(
     downloadIncomingArtifact({
       registry: registryFor({ name: "blocked.txt", stream: Readable.from(["blocked"]) }),
@@ -309,10 +357,16 @@ async function testPublicationFailurePreservesReplacement(testRoot: string): Pro
       maxFileBytes: 1024,
       file: { native: true },
       path: "generated.txt",
-      publishLink: async (partialPath, candidatePath) => {
-        await link(partialPath, candidatePath);
-        await unlink(candidatePath);
-        await writeFile(candidatePath, "replacement");
+      publishEntry: async (directory, partialName, candidateName) => {
+        await directory.link(partialName, candidateName);
+        await directory.unlink(candidateName);
+        const replacement = await directory.createExclusiveFile(candidateName, 0o600);
+        try {
+          await replacement.writeAll(Buffer.from("replacement"), 0);
+          await replacement.sync();
+        } finally {
+          await replacement.close();
+        }
       },
     }),
     "artifact_destination_publish_failed",
@@ -342,7 +396,11 @@ async function testPublishedPermissions(testRoot: string): Promise<void> {
     process.umask(previousUmask);
   }
 
-  assert.equal((await stat(join(workspaceRoot, "private.txt"))).mode & 0o777, 0o600);
+  const published = await stat(join(workspaceRoot, "private.txt"));
+  assert.equal(published.isFile(), true);
+  if (process.platform !== "win32") {
+    assert.equal(published.mode & 0o777, 0o600);
+  }
 }
 
 function testLogRedaction(): void {

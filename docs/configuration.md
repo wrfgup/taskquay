@@ -329,8 +329,8 @@ do not replace a running server's dist mid-task. See [console verification](proj
 
 Set `artifacts.enabled` to `true` when a host needs to save a native attached or
 generated file into an open workspace. `artifacts.maxFileBytes` limits one
-streamed file. The secure publication path is currently available only on
-Linux; the tool is not registered on macOS, Windows, or BSD.
+streamed file. The secure publication path is available on Linux, macOS, and
+Windows; the tool is not registered on BSD.
 
 ## Environment boundary
 

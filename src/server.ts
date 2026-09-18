@@ -699,14 +699,12 @@ function registerMcpSurface(
       const workRunId = work_run_id;
       const responseOffset = response_offset;
       const workspace = await workspaces.getWorkspace(workspaceId);
-      const readPath = workspaces.resolveReadPath(workspace, input.path);
+      const readPath = await workspaces.resolveReadPath(workspace, input.path);
       let operationId: string | undefined;
       const response = await trackedWork(config.stateDir, workRunId, { root: workspace.root, workspaceId }, "read", (id) => { operationId = id; return processSessions.readWorkspace(workspace.root, () => readFileTool(
         { ...input, path: readPath.absolutePath },
         {
           cwd: workspace.root,
-          root: workspace.root,
-          readRoots: readPath.readRoots,
         },
       )); }, { argumentFingerprint: argumentFingerprint({ workspaceId, workRunId, ...input }), selectionCount: 1 });
 

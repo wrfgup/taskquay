@@ -12,7 +12,8 @@ export interface GitCommandResult {
 export interface GitEligibility {
   ok: boolean;
   gitRoot?: string;
-  reason?: "not_git" | "no_head";
+  hasHead?: boolean;
+  reason?: "not_git";
   message?: string;
 }
 
@@ -44,16 +45,30 @@ export async function getGitEligibility(cwd: string): Promise<GitEligibility> {
   const gitRoot = (await git(cwd, ["rev-parse", "--show-toplevel"])).stdout.trim();
   try {
     await git(gitRoot, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
-  } catch {
+  } catch (error) {
+    let headRef: string;
+    try {
+      headRef = (await git(gitRoot, ["symbolic-ref", "--quiet", "HEAD"])).stdout.trim();
+    } catch {
+      throw error;
+    }
+
+    const existingHeadRef = (await git(gitRoot, [
+      "for-each-ref",
+      "--format=%(refname)",
+      "--count=1",
+      headRef,
+    ])).stdout.trim();
+    if (existingHeadRef) throw error;
+
     return {
-      ok: false,
+      ok: true,
       gitRoot,
-      reason: "no_head",
-      message: "repository has no HEAD commit",
+      hasHead: false,
     };
   }
 
-  return { ok: true, gitRoot };
+  return { ok: true, gitRoot, hasHead: true };
 }
 
 export function safeWorkspaceRefSegment(workspaceId: string): string {

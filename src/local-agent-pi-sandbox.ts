@@ -84,29 +84,30 @@ export function createPiSandboxExtension(
   modeRef: PiSandboxModeRef,
   env: NodeJS.ProcessEnv = {},
 ): ExtensionFactory {
+  const restrictedWorkspace = resolveWorkspace(workspace);
   return (pi) => {
     const localRead = createReadTool(workspace);
-    const restrictedRead = createReadTool(workspace, { operations: createReadOperations(workspace) });
+    const restrictedRead = createReadTool(workspace, { operations: createReadOperations(restrictedWorkspace) });
     pi.registerTool(dynamicTool(localRead, restrictedRead, modeRef));
 
     const localWrite = createWriteTool(workspace);
-    const restrictedWrite = createWriteTool(workspace, { operations: createWriteOperations(workspace) });
+    const restrictedWrite = createWriteTool(workspace, { operations: createWriteOperations(restrictedWorkspace) });
     pi.registerTool(dynamicTool(localWrite, restrictedWrite, modeRef, true));
 
     const localEdit = createEditTool(workspace);
-    const restrictedEdit = createEditTool(workspace, { operations: createEditOperations(workspace) });
+    const restrictedEdit = createEditTool(workspace, { operations: createEditOperations(restrictedWorkspace) });
     pi.registerTool(dynamicTool(localEdit, restrictedEdit, modeRef, true));
 
     const localGrep = createGrepTool(workspace);
-    const restrictedGrep = createGrepTool(workspace, { operations: createGrepOperations(workspace) });
+    const restrictedGrep = createGrepTool(workspace, { operations: createGrepOperations(restrictedWorkspace) });
     pi.registerTool(dynamicTool(localGrep, restrictedGrep, modeRef));
 
     const localFind = createFindTool(workspace);
-    const restrictedFind = createFindTool(workspace, { operations: createFindOperations(workspace) });
+    const restrictedFind = createFindTool(workspace, { operations: createFindOperations(restrictedWorkspace) });
     pi.registerTool(dynamicTool(localFind, restrictedFind, modeRef));
 
     const localLs = createLsTool(workspace);
-    const restrictedLs = createLsTool(workspace, { operations: createLsOperations(workspace) });
+    const restrictedLs = createLsTool(workspace, { operations: createLsOperations(restrictedWorkspace) });
     pi.registerTool(dynamicTool(localLs, restrictedLs, modeRef));
 
     const withProviderEnv = (operations: BashOperations): BashOperations => ({
@@ -119,7 +120,7 @@ export function createPiSandboxExtension(
       operations: withProviderEnv(createLocalBashOperations()),
     });
     const restrictedBash = createBashTool(workspace, {
-      operations: withProviderEnv(createSandboxedBashOperations()),
+      operations: withProviderEnv(createSandboxedBashOperations(restrictedWorkspace)),
     });
     pi.registerTool(dynamicTool(localBash, restrictedBash, modeRef, true));
   };
@@ -312,17 +313,18 @@ function createLsOperations(workspace: string): LsOperations {
   };
 }
 
-function createSandboxedBashOperations(): BashOperations {
+function createSandboxedBashOperations(workspace: string): BashOperations {
   return {
     exec: (command, cwd, options) => withSandboxCommand(async () => {
+      const operationCwd = await assertPiWorkspacePath(cwd, workspace);
       if (process.platform === "win32") {
         return enqueueWindowsSandbox(async () => {
-          await ensureWindowsSandbox(cwd);
-          return runSandboxedCommand(command, cwd, options);
+          await ensureWindowsSandbox(operationCwd);
+          return runSandboxedCommand(command, operationCwd, options);
         });
       }
       await ensureSandboxInitialized();
-      return runSandboxedCommand(command, cwd, options);
+      return runSandboxedCommand(command, operationCwd, options);
     }),
   };
 }
