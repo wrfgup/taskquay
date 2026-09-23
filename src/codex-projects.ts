@@ -10,11 +10,11 @@ import { ensureSavedDesktopProject } from "./codex-desktop-open.js";
 import * as z from "zod/v4";
 import { assertAllowedPath, canonicalPathIdentity, expandHomePath, isPathInsideRoot } from "./roots.js";
 
-// Verified against bundled 0.153.4 and 0.154.0-alpha.6.2 generated experimental
+// Verified against bundled 0.153.4, 0.154.0-alpha.6.2 and 0.155.0-alpha.9.2 generated experimental
 // schemas. Runtime schema and provider-home checks still gate every operation.
 // These are real project RPCs, not edits to Desktop JSON or Codex SQLite.
 export const PROJECT_PROTOCOL = "codex-app-server-projects/0.153.4";
-export const VERIFIED_DESKTOP_VERSIONS = ["0.153.4", "0.154.0-alpha.6.2"] as const;
+export const VERIFIED_DESKTOP_VERSIONS = ["0.153.4", "0.154.0-alpha.6.2", "0.155.0-alpha.9.2"] as const;
 export function verifiedDesktopVersion(output: string): boolean {
   const version = /^codex-cli ([0-9A-Za-z.+-]+)\s*$/.exec(output.trim())?.[1];
   return VERIFIED_DESKTOP_VERSIONS.some((allowed) => allowed === version);
