@@ -30,7 +30,9 @@ function testPackedPackageLaunchers(): void {
       "--no-fund",
       "--no-package-lock",
       "--no-save",
-      "--omit=optional",
+      // Koffi distributes its platform binaries as optional dependencies.
+      // Include them even if the caller's npm configuration omits optional packages.
+      "--include=optional",
       join(root, archive),
     ], {
       cwd: installRoot,
