@@ -6,7 +6,8 @@ test("only independently verified Desktop protocol versions are admitted", () =>
   assert(verifiedDesktopVersion("codex-cli 0.153.4\r\n"));
   assert(verifiedDesktopVersion("codex-cli 0.154.0-alpha.6.2\n"));
   assert(verifiedDesktopVersion("codex-cli 0.155.0-alpha.9.2\n"));
-  for (const value of ["codex-cli 0.155.0", "codex-cli 0.155.0-alpha.9.3", "codex-cli 0.154.0", "codex-cli 0.154.0-alpha.6.3", "codex-cli 0.135.0", "codex-cli 0.154.0-alpha.6.2\nextra", "other-cli 0.153.4", ""]) {
+  assert(verifiedDesktopVersion("codex-cli 0.159.2\r\n"));
+  for (const value of ["codex-cli 0.159.3", "codex-cli 0.160.0", "codex-cli 0.159.2\nextra", "codex-cli 0.155.0", "codex-cli 0.155.0-alpha.9.3", "codex-cli 0.154.0", "codex-cli 0.154.0-alpha.6.3", "codex-cli 0.135.0", "codex-cli 0.154.0-alpha.6.2\nextra", "other-cli 0.153.4", ""]) {
     assert.equal(verifiedDesktopVersion(value), false);
   }
 });

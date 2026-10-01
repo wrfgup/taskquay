@@ -1,7 +1,8 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { realpath, stat } from "node:fs/promises";
 import { isAbsolute, win32 } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { promisify } from "node:util";
 import { DesktopProjectMissingError, DesktopMappingPendingError, readDesktopCatalog } from "./codex-desktop-catalog.js";
 
 type SavedCatalog = Awaited<ReturnType<typeof readDesktopCatalog>>;
@@ -12,6 +13,41 @@ export interface DesktopOpenRuntime {
   now(): number;
 }
 const pending = new Map<string, Promise<{ catalog: SavedCatalog; creation: "existing" | "requested_and_verified" }>>();
+const execFileAsync = promisify(execFile);
+
+/** The packaged application may be ChatGPT.exe; do not guess it from the CLI's filename. */
+export function validateDesktopPackageCommand(value: unknown): { installRoot: string; command: string } | null {
+  if (value === null) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Ambiguous Desktop package registration.");
+  const { installRoot, command } = value as Record<string, unknown>;
+  if (typeof installRoot !== "string" || typeof command !== "string" || !win32.isAbsolute(installRoot) || !win32.isAbsolute(command)
+    || /[\u0000-\u001f]/.test(installRoot + command) || !command.toLowerCase().endsWith(".exe")) throw new Error("Invalid Desktop package executable.");
+  const relative = win32.relative(installRoot, command);
+  if (!relative || relative === ".." || relative.startsWith("..\\") || win32.isAbsolute(relative)) throw new Error("Desktop executable is outside its registered package.");
+  return { installRoot, command };
+}
+
+export function desktopProjectLaunchArgs(root: string): string[] {
+  desktopWorkspaceLink(root); // same directory-only validation, no prompt or origin parameter
+  return ["--open-project", root];
+}
+
+async function registeredWindowsDesktopApp(env: NodeJS.ProcessEnv): Promise<string | null> {
+  // Constant read-only discovery program; no user path is interpolated into PowerShell.
+  const script = "$ErrorActionPreference='Stop'; $p=@(Get-AppxPackage -Name OpenAI.Codex); "
+    + "if($p.Count -eq 0){Write-Output 'null'; exit 0}; if($p.Count -ne 1){throw 'Ambiguous Desktop packages'}; "
+    + "$m=$p[0] | Get-AppxPackageManifest; $a=@($m.Package.Applications.Application | Where-Object {$_.Id -eq 'App'}); "
+    + "if($a.Count -ne 1){throw 'Ambiguous Desktop application'}; "
+    + "@{installRoot=$p[0].InstallLocation; command=[IO.Path]::GetFullPath((Join-Path $p[0].InstallLocation $a[0].Executable))} | ConvertTo-Json -Compress";
+  const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script],
+    { env, windowsHide: true, timeout: 5000, maxBuffer: 16384, encoding: "utf8" });
+  const registered = validateDesktopPackageCommand(JSON.parse(stdout.trim()));
+  if (!registered) return null;
+  const installRoot = await realpath(registered.installRoot), command = await realpath(registered.command);
+  validateDesktopPackageCommand({ installRoot, command });
+  if (!(await stat(command)).isFile()) throw new Error("Registered Desktop executable is not a file.");
+  return command;
+}
 
 /** No prompt, origin URL or command can be injected through a workspace path. */
 export function desktopWorkspaceLink(root: string): string {
@@ -46,8 +82,20 @@ export async function ensureClientProject(roots: string[], runtime: DesktopOpenR
   }
 }
 
-function openWindowsWorkspace(link: string, env: NodeJS.ProcessEnv): Promise<void> {
+async function openWindowsWorkspace(link: string, env: NodeJS.ProcessEnv): Promise<void> {
   if (process.platform !== "win32") return Promise.reject(new Error("Automatic Desktop workspace opening is currently verified on Windows only."));
+  const command = await registeredWindowsDesktopApp(env);
+  if (command) {
+    const root = new URL(link).searchParams.get("path");
+    if (!root) throw new Error("Desktop workspace link has no directory.");
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(command, desktopProjectLaunchArgs(root), { env, windowsHide: true, stdio: "ignore", shell: false });
+      child.once("error", () => reject(new Error("Registered Desktop application could not be launched.")));
+      // This may become the primary GUI process; never terminate it on an observation timeout.
+      child.once("spawn", () => { child.unref(); resolve(); });
+    });
+    return;
+  }
   return new Promise((resolve, reject) => {
     // Constant program text; the URI is transported as data, not interpolated
     // into a shell command. No clipboard, menu inspection, global JSON write,

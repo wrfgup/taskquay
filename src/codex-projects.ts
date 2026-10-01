@@ -10,11 +10,12 @@ import { ensureSavedDesktopProject } from "./codex-desktop-open.js";
 import * as z from "zod/v4";
 import { assertAllowedPath, canonicalPathIdentity, expandHomePath, isPathInsideRoot } from "./roots.js";
 
-// Verified against bundled 0.153.4, 0.154.0-alpha.6.2 and 0.155.0-alpha.9.2 generated experimental
-// schemas. Runtime schema and provider-home checks still gate every operation.
+// Verified against bundled 0.153.4, 0.154.0-alpha.6.2, 0.155.0-alpha.9.2 and 0.159.2
+// generated experimental schemas. See scripts/verify-codex-project-schema.ts for
+// upgrade qualification. Runtime response and provider-home checks remain mandatory.
 // These are real project RPCs, not edits to Desktop JSON or Codex SQLite.
 export const PROJECT_PROTOCOL = "codex-app-server-projects/0.153.4";
-export const VERIFIED_DESKTOP_VERSIONS = ["0.153.4", "0.154.0-alpha.6.2", "0.155.0-alpha.9.2"] as const;
+export const VERIFIED_DESKTOP_VERSIONS = ["0.153.4", "0.154.0-alpha.6.2", "0.155.0-alpha.9.2", "0.159.2"] as const;
 export function verifiedDesktopVersion(output: string): boolean {
   const version = /^codex-cli ([0-9A-Za-z.+-]+)\s*$/.exec(output.trim())?.[1];
   return VERIFIED_DESKTOP_VERSIONS.some((allowed) => allowed === version);
@@ -253,6 +254,8 @@ export async function connectDesktopProjects(env: NodeJS.ProcessEnv = process.en
     const result = z.object({ codexHome: z.string() }).passthrough().parse(await request("initialize", {
       clientInfo: { name: "devspace-projects", version: "1.0.8" }, capabilities: { experimentalApi: true },
     }));
+    // Complete the initialization lifecycle before sending project RPCs.
+    child.stdin.write(`${JSON.stringify({ method: "initialized" })}\n`);
     return { home: result.codexHome, command, request, close };
   } catch (error) { await close(); throw error; }
 }
