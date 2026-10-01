@@ -18,6 +18,17 @@ Profiles are discovered from:
 
 Packaged files under `examples/agents/` are starter templates only.
 
+Provider defaults live in `~/.devspace/config.jsonc`. The
+[Codex session defaults example](../examples/codex-session-defaults.jsonc)
+sets GPT-6.1 Sol with `high` effort for read/write sessions and `medium`
+effort for sessions explicitly started with `writeMode: "read_only"`.
+Merge the fields into the existing Codex provider entry, preserving other
+providers, the executable command, environment, and permission settings.
+Explicit request settings override these defaults; profile settings can
+also override the provider model and effort for read/write sessions.
+Existing sessions retain their stored settings. Restart the service to
+load the updated provider configuration for new sessions.
+
 ## Minimal shape
 
 ```md

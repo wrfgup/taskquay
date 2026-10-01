@@ -1,0 +1,19 @@
+// Merge this fragment into your existing DevSpace config.jsonc.
+// Keep your existing provider command, environment, and writeMode settings.
+{
+  "subagents": {
+    "enabled": true,
+    "providers": [
+      {
+        "id": "codex",
+        "enabled": true,
+        "model": "gpt-6.1-sol",
+        "effort": "high",
+        "readOnlyDefaults": {
+          "model": "gpt-6.1-sol",
+          "effort": "medium"
+        }
+      }
+    ]
+  }
+}
