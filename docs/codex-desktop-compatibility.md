@@ -44,6 +44,14 @@ pnpm exec tsx scripts/test-with-receipt.ts src/codex-project-schema.test.ts src/
 
 完成测试和 dist 编译后进行有界只读诊断，未超过 8 次额外检查。目标 GUI 的返回 app 标识为 `OpenAI.Codex_2p2nqsd0c76g0!App`，窗口 591656。只截取该窗口，观察到“信任此文件夹吗？”弹窗，明确列出 `D:\project\gpt-projects\u15-visual-thinking`，并有“信任文件夹”和“取消”按钮；未点击、关闭或改变弹窗，也未继续读取背景聊天。
 
+## 运行服务部署回执（后续状态，2026-10-01）
+
+补丁已本地提交 `d23ab97`，未 push。所有受管命令和代理空闲后，主控执行一次限定进程身份的维护重载。实际回执 `.local/codex-0159-compat/runtime-reload.json`：旧服务 PID 12524，新服务 PID 32024，`sourceCommit=d23ab97`；2026-10-01 08:24:32 UTC 健康检查 HTTP 200，server.pid 已更新。未重启 GUI、隧道或修改凭据。
+
+主控随后通过恢复后的连接再次检查实际进程命令、`/healthz`、编译后 `verifiedDesktopVersion('codex-cli 0.159.2')` 及既有 DevSpace 工程登记，组合命令退出码 0，operation 为 `op_301c7c55431d455cad8d6a1d1df9e505`。它验证部署与已授权工程，不等于 U15 新目录已信任。
+
+本轮原生 agent `agt_c45ea38a` 已完成三轮真实请求，provider thread `01a0f670-4202-7642-af54-f4c2f2bcf4fb`，最后结束于 08:12:46 UTC；完整累计用量 4,011,142 tokens，含缓存输入及推理子项，不能重复相加，不是订阅余额。U15 目录的信任按钮调用返回 `coordinate input geometry is unavailable`，未确认点击成功；08:22:48 UTC 回读仍无目标目录客户端映射。保留该明确限制，不删除客户端校验。
+
 随后执行 `pnpm exec tsx scripts/inspect-codex-client-project-state.ts D:/project/gpt-projects/u15-visual-thinking`，退出码 0，`targetFieldPaths: []`；状态文件修改时间为 `2026-10-01T08:06:56.066Z`。这与客户端尚无 U15 根登记一致，且 GUI 证据表明目录信任步骤待处理。下一步由用户核对该目录和弹窗中读取、编辑、运行文件及可能自动运行目录代码的授权范围，再决定是否点击“信任文件夹”；之后重新回读 saved mapping 并检查 GUI 结果。当前仍报告 U15 缺失登记，没有将启动或授权弹窗当作成功。
 
 08:12Z 补充：按用户对该实验目录读取、修改、运行与创建 Codex 项目的明确授权，重新核对唯一目录和正常“信任文件夹”按钮后尝试一次界面操作。计算机工具返回 `coordinate input geometry is unavailable`，不能确认点击生效；未通过修改数据库、全局信任策略或其他隐蔽方式替代该操作。此阻塞是 GUI 自动化可用性，不是 0.159.2 协议不兼容。该窗口仍需本机正常确认，之后回读真实 client/server 映射。
